@@ -8,11 +8,9 @@ import shutil
 import time
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from io import BytesIO
 from pathlib import Path
-import random
 
-# Автоустановка зависимостей (если нужно)
+# Автоустановка зависимостей
 REQUIRED = ["textual", "pygame-ce", "yt-dlp", "requests"]
 for pkg in REQUIRED:
     try:
@@ -31,20 +29,14 @@ try:
 except Exception:
     from pygame_ce import mixer
 
-# Инициализация микшера
 mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
 
-# Путь приложения и файл истории
 APP_DIR = Path.cwd()
 HISTORY_FILE = APP_DIR / "history.json"
 
-# Глобалы (без прокси)
 temp_dir: Optional[str] = None
 current_file: Optional[str] = None
 
-# -----------------------
-# Вспомогательные мелочи
-# -----------------------
 def format_duration(seconds) -> str:
     try:
         m, s = divmod(int(seconds or 0), 60)
@@ -52,9 +44,6 @@ def format_duration(seconds) -> str:
     except Exception:
         return "0:00"
 
-# -----------------------
-# История: чтение/запись
-# -----------------------
 def load_history() -> List[Dict]:
     try:
         if HISTORY_FILE.exists():
@@ -84,15 +73,11 @@ def append_history_item(item: Dict) -> None:
         "url": item.get("url"),
         "ts": int(time.time()),
     }
-    # удаляем совпадающие по url/id чтобы переместить в начало
     hist = [h for h in hist if not (h.get("url") == entry["url"] and entry["url"])]
     hist.insert(0, entry)
     hist = hist[:500]
     save_history(hist)
 
-# -----------------------
-# Временная папка / yt-dlp helpers (без proxy)
-# -----------------------
 def has_ffmpeg() -> bool:
     from shutil import which
     return which("ffmpeg") is not None or which("avconv") is not None
@@ -126,75 +111,96 @@ def cleanup_old_files(max_age_seconds: int = 3600) -> None:
     except Exception:
         pass
 
-def _build_ydl_opts(outdir: str, use_ffmpeg: bool, geo_bypass: bool=False) -> dict:
+def _build_ydl_opts(outdir: str, use_ffmpeg: bool, geo_bypass: bool=True) -> dict:
+    """АГРЕССИВНЫЙ режим: всегда обходим geo!"""
     opts = {
         "format": "bestaudio/best",
         "outtmpl": os.path.join(outdir, "%(id)s.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
+        "geo_bypass": True,
+        "geo_bypass_country": "US",
     }
+    
     if use_ffmpeg:
         opts["postprocessors"] = [{
             "key": "FFmpegExtractAudio",
             "preferredcodec": "mp3",
             "preferredquality": "192",
         }]
-    # geo_bypass handled via option below if requested
-    if geo_bypass:
-        # yt-dlp accepts geo_bypass and geo_bypass_country when running as CLI;
-        # in the python API we can pass 'geo_bypass': True
-        opts["geo_bypass"] = True
-        # optionally set country if you want e.g. opts['geo_bypass_country'] = 'US'
+    
+    opts["http_headers"] = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-us,en;q=0.5",
+        "Sec-Fetch-Mode": "navigate",
+    }
+    
     return opts
 
-def download_track_file(url: str, outdir: Optional[str] = None, geo_bypass: bool=False) -> str:
+def download_track_file(url: str, outdir: Optional[str] = None, geo_bypass: bool=True) -> str:
     if outdir is None:
         outdir = ensure_temp_dir()
     use_ffmpeg = has_ffmpeg()
     ydl_opts = _build_ydl_opts(outdir, use_ffmpeg, geo_bypass=geo_bypass)
-    # Добавим явный User-Agent (иногда помогает)
-    ydl_opts.setdefault('http_headers', {})['User-Agent'] = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                                                             "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                                             "Chrome/115.0 Safari/537.36")
+    
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         try:
             filename = ydl.prepare_filename(info)
         except Exception:
             filename = None
+    
     if filename and os.path.exists(filename):
         return filename
+    
     file_id = info.get("id")
     if file_id:
         for fn in os.listdir(outdir):
             if fn.startswith(file_id):
                 return os.path.join(outdir, fn)
+    
     files = [os.path.join(outdir, f) for f in os.listdir(outdir)]
     if files:
         files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
         return files[0]
+    
     raise FileNotFoundError("Не удалось найти скачанный файл")
 
-def extract_info(url: str, extract_flat: bool = False, geo_bypass: bool=False) -> Dict:
-    ydl_opts = {"quiet": True, "no_warnings": True}
+def extract_info(url: str, extract_flat: bool = False, geo_bypass: bool=True) -> Dict:
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "geo_bypass": geo_bypass,
+        "geo_bypass_country": "US",
+    }
+    
     if extract_flat:
         ydl_opts["extract_flat"] = "in_playlist"
-    if geo_bypass:
-        ydl_opts["geo_bypass"] = True
-        #ydl_opts["geo_bypass_country"] = "US"  # при желании можно задать страну
-    ydl_opts.setdefault('http_headers', {})['User-Agent'] = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                                                             "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                                             "Chrome/115.0 Safari/537.36")
+    
+    ydl_opts["http_headers"] = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-us,en;q=0.5",
+    }
+    
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(url, download=False)
 
-def fetch_full_entry_info(entry_id_or_url: str, geo_bypass: bool=False) -> Optional[Dict]:
-    ydl_opts = {"quiet": True, "no_warnings": True}
-    if geo_bypass:
-        ydl_opts["geo_bypass"] = True
-    ydl_opts.setdefault('http_headers', {})['User-Agent'] = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                                                             "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                                             "Chrome/115.0 Safari/537.36")
+def fetch_full_entry_info(entry_id_or_url: str, geo_bypass: bool=True) -> Optional[Dict]:
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "geo_bypass": geo_bypass,
+        "geo_bypass_country": "US",
+    }
+    
+    ydl_opts["http_headers"] = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-us,en;q=0.5",
+    }
+    
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(entry_id_or_url, download=False)
@@ -208,89 +214,135 @@ def fetch_full_entry_info(entry_id_or_url: str, geo_bypass: bool=False) -> Optio
                 "duration": info.get("duration") or 0,
                 "url": webpage,
             }
-    except yt_dlp.utils.DownloadError as e:
-        # блокировка/ошибка загрузки для этого элемента
-        return None
     except Exception:
         return None
 
 def build_playlist_entries_fast(url: str, max_workers: int = 8) -> List[Dict]:
-    """
-    Быстро собираем список треков плейлиста без прокси.
-    Логика:
-    1) пытаемся extract_flat (быстро);
-    2) подтягиваем в параллели полную инфу для каждой записи (fetch_full_entry_info).
-    3) если ничего не получилось — делаем одну автоматическую попытку с geo_bypass=True и возвращаем все удачные записи.
-    """
-    try:
-        flat = extract_info(url, extract_flat=True, geo_bypass=False)
-    except Exception:
-        flat = None
-
-    ids = []
+    """АГРЕССИВНЫЙ обход geo - пробуем ВСЕ способы"""
     results = []
-
-    if flat and isinstance(flat, dict) and flat.get("entries"):
-        for e in flat.get("entries", []):
-            eid = e.get("id") or e.get("url") or e.get("webpage_url")
-            if eid:
-                ids.append(eid)
-
-        # параллельно подтянем полные записи (стандартный режим)
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futures = {ex.submit(fetch_full_entry_info, i, False): i for i in ids}
-            for fut in as_completed(futures):
-                try:
-                    res = fut.result()
-                    if res:
-                        results.append(res)
-                except Exception:
-                    pass
-
-        if results:
-            # Сохраняем в исходном порядке если возможно
-            id_to_res = {r["id"]: r for r in results if r.get("id")}
-            ordered = []
-            for i in ids:
-                r = id_to_res.get(i)
-                if r:
-                    ordered.append(r)
-            if not ordered:
-                ordered = results
-            return ordered
-
-    # Если не получили результатов — пробуем альтернативу: полная инфа с geo_bypass=True
+    
+    # ПОПЫТКА 1: С geo_bypass сразу
     try:
+        print("🌍 Попытка 1: Загрузка с обходом geo...")
+        flat = extract_info(url, extract_flat=True, geo_bypass=True)
+        
+        if flat and isinstance(flat, dict) and flat.get("entries"):
+            ids = []
+            for e in flat.get("entries", []):
+                eid = e.get("id") or e.get("url") or e.get("webpage_url")
+                if eid:
+                    ids.append(eid)
+            
+            if ids:
+                print(f"📦 Найдено {len(ids)} треков, загружаю параллельно...")
+                with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                    futures = {ex.submit(fetch_full_entry_info, i, True): i for i in ids}
+                    for fut in as_completed(futures):
+                        try:
+                            res = fut.result()
+                            if res:
+                                results.append(res)
+                        except Exception:
+                            pass
+                
+                if results:
+                    id_to_res = {r["id"]: r for r in results if r.get("id")}
+                    ordered = []
+                    for i in ids:
+                        r = id_to_res.get(i)
+                        if r:
+                            ordered.append(r)
+                    if ordered:
+                        print(f"✅ Загружено {len(ordered)} треков!")
+                        return ordered
+                    return results
+    except Exception as e:
+        print(f"⚠️ Попытка 1 не удалась: {e}")
+    
+    # ПОПЫТКА 2: Полная загрузка
+    try:
+        print("🌍 Попытка 2: Полная загрузка с geo_bypass...")
         full_try = extract_info(url, extract_flat=False, geo_bypass=True)
         tracks = []
+        
         if full_try and full_try.get("entries"):
             for e in full_try.get("entries"):
-                webpage = e.get("webpage_url") or e.get("url")
-                if not webpage:
-                    # попытка получить отдельную запись с geo_bypass=True
-                    fi = fetch_full_entry_info(e.get("id") or e.get("url"), geo_bypass=True)
-                    if fi:
-                        tracks.append(fi)
+                try:
+                    webpage = e.get("webpage_url") or e.get("url")
+                    if not webpage:
+                        fi = fetch_full_entry_info(e.get("id") or e.get("url"), geo_bypass=True)
+                        if fi:
+                            tracks.append(fi)
+                        continue
+                    
+                    tracks.append({
+                        "id": e.get("id"),
+                        "title": e.get("title") or webpage,
+                        "artist": e.get("uploader") or e.get("artist") or "",
+                        "duration": e.get("duration") or 0,
+                        "url": webpage,
+                    })
+                except Exception:
                     continue
-                tracks.append({
-                    "id": e.get("id"),
-                    "title": e.get("title") or webpage,
-                    "artist": e.get("uploader") or "",
-                    "duration": e.get("duration") or 0,
-                    "url": webpage,
-                })
-            # Вернём даже частично доступные треки (не бросаем ошибку)
+            
             if tracks:
+                print(f"✅ Загружено {len(tracks)} треков!")
                 return tracks
-    except Exception:
-        pass
-
-    # fallback: ничего не удалось — вернём пустой список
+    except Exception as e:
+        print(f"⚠️ Попытка 2 не удалась: {e}")
+    
+    # ПОПЫТКА 3: Без geo (на всякий случай)
+    try:
+        print("🔄 Попытка 3: Стандартная загрузка...")
+        flat = extract_info(url, extract_flat=True, geo_bypass=False)
+        
+        if flat and isinstance(flat, dict) and flat.get("entries"):
+            ids = []
+            for e in flat.get("entries", []):
+                eid = e.get("id") or e.get("url") or e.get("webpage_url")
+                if eid:
+                    ids.append(eid)
+            
+            if ids:
+                with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                    futures = {ex.submit(fetch_full_entry_info, i, False): i for i in ids}
+                    for fut in as_completed(futures):
+                        try:
+                            res = fut.result()
+                            if res:
+                                results.append(res)
+                        except Exception:
+                            pass
+                
+                if results:
+                    print(f"✅ Загружено {len(results)} треков!")
+                    return results
+    except Exception as e:
+        print(f"⚠️ Попытка 3 не удалась: {e}")
+    
+    print("❌ Все попытки не удались. Возможно нужен VPN.")
     return []
 
-# -----------------------
-# UI / App (с историей)
-# -----------------------
+def search_yt_dlp(query: str, max_results: int = 50) -> List[Dict]:
+    search_url = f"ytsearch{max_results}:{query}"
+    try:
+        info = extract_info(search_url, geo_bypass=True)
+        results = []
+        if info and info.get("entries"):
+            for e in info["entries"]:
+                if not e:
+                    continue
+                results.append({
+                    "id": e.get("id"),
+                    "title": e.get("title") or "Unknown",
+                    "artist": e.get("uploader") or e.get("channel") or "",
+                    "duration": e.get("duration") or 0,
+                    "url": e.get("webpage_url") or e.get("url"),
+                })
+        return results
+    except Exception:
+        return []
+
 class TrackItem(ListItem):
     def __init__(self, track: Dict):
         super().__init__()
@@ -317,13 +369,13 @@ class Player(App):
         ("ctrl+h", "toggle_history", "История"),
         ("q", "quit", "Выход"),
     ]
+    
     def __init__(self):
         super().__init__()
         self.queue: List[Dict] = []
         self.current_idx: int = 0
         self.current_track: Optional[Dict] = None
         self.current_file: Optional[str] = None
-        # history
         self.history: List[Dict] = load_history()
         self.history_mode: bool = False
         self._saved_queue: Optional[List[Dict]] = None
@@ -332,7 +384,7 @@ class Player(App):
         yield Header()
         yield Input(placeholder="Введи трек/артиста или вставь ссылку на трек/плейлист (Enter)", id="inp")
         yield ListView(id="list")
-        yield Static("🎵 Готово (yt-dlp backend). Ctrl+H — история", id="status")
+        yield Static("🎵 Готово (с агрессивным обходом geo). Ctrl+H — история", id="status")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -343,7 +395,7 @@ class Player(App):
     async def action_toggle_pause(self) -> None:
         if mixer.music.get_busy():
             mixer.music.pause()
-            self.query_one("#status", Static).update("⏸ Пауза")
+            self.query_one("#status", Static).update("⸸ Пауза")
         else:
             mixer.music.unpause()
             if self.current_track:
@@ -360,12 +412,9 @@ class Player(App):
             await self._play_index(self.current_idx)
 
     async def action_toggle_history(self) -> None:
-        """
-        Переключатель режима истории: Ctrl+H откроет/закроет список истории.
-        В режиме истории Enter воспроизводит выбранную запись.
-        """
         lv = self.query_one("#list", ListView)
         status = self.query_one("#status", Static)
+        
         if not self.history_mode:
             self._saved_queue = list(self.queue)
             lv.clear()
@@ -416,20 +465,15 @@ class Player(App):
         status = self.query_one("#status", Static)
         lv.clear()
         status.update("⏳ Загрузка...")
+        
         if "soundcloud.com" in q or "snd.sc" in q:
-            status.update("⏳ Формирую список треков...")
-            # сначала обычный быстрый сбор
+            status.update("⏳ Формирую список треков (с обходом geo)...")
             tracks = await asyncio.to_thread(build_playlist_entries_fast, q, 8)
+            
             if not tracks:
-                # сделаем запасную попытку с geo_bypass (временно) — иногда это помогает
-                status.update("⚠ Не получилось собрать треки в стандартном режиме — пробую ещё раз с обходом гео (одноразовая попытка)...")
-                try:
-                    tracks = await asyncio.to_thread(lambda: build_playlist_entries_fast_geo_fallback(q, 8))
-                except Exception:
-                    tracks = []
-            if not tracks:
-                status.update("❌ Не удалось получить треки (возможно geo-restriction). Попробуй другой URL или VPN.")
+                status.update("❌ Не удалось загрузить. Попробуй VPN или другую ссылку.")
                 return
+            
             self.queue = tracks
             self.current_idx = 0
             for t in tracks:
@@ -441,7 +485,7 @@ class Player(App):
             status.update("⏳ Поиск...")
             tracks = await asyncio.to_thread(search_yt_dlp, q, 50)
             if not tracks:
-                status.update("⚠ Ничего не найдено")
+                status.update("⚠️ Ничего не найдено")
                 return
             self.queue = tracks
             self.current_idx = 0
@@ -459,12 +503,14 @@ class Player(App):
         except Exception as e:
             status.update(f"❌ Ошибка загрузки: {e}")
             return
+        
         if self.current_file and os.path.exists(self.current_file):
             try:
                 os.remove(self.current_file)
             except Exception:
                 pass
             self.current_file = None
+        
         self.current_file = filename
         try:
             mixer.music.load(filename)
@@ -478,28 +524,34 @@ class Player(App):
         status = self.query_one("#status", Static)
         if not (0 <= idx < len(self.queue)):
             return
+        
         track = self.queue[idx]
         self.current_idx = idx
         self.current_track = track
         status.update(f"⏳ Подготовка: {track.get('title')}")
+        
         if self.current_file and os.path.exists(self.current_file):
             try:
                 os.remove(self.current_file)
             except Exception:
                 pass
             self.current_file = None
+        
         cleanup_old_files(max_age_seconds=60*30)
+        
         try:
             filename = await asyncio.to_thread(download_track_file, track.get("url"))
         except Exception as e:
             err = str(e)
-            if "This video is not available from your location" in err or "geo" in err.lower():
-                status.update("❌ Трек недоступен в твоём регионе. Попробуй VPN.")
+            if "geo" in err.lower() or "not available" in err.lower():
+                status.update(f"❌ Geo-блок. Попробуй VPN или другой трек.")
             else:
-                status.update(f"❌ Ошибка загрузки: {e}")
+                status.update(f"❌ Ошибка: {e}")
             return
+        
         self.current_file = filename
         append_history_item(track)
+        
         try:
             mixer.music.load(filename)
             mixer.music.play()
@@ -523,44 +575,9 @@ class Player(App):
             pass
         await asyncio.to_thread(cleanup_temp_dir)
 
-# -----------------------
-# Дополнительная вспомогательная функция:
-# единоразовая попытка собрать плейлист с geo_bypass=True
-# -----------------------
-def build_playlist_entries_fast_geo_fallback(url: str, max_workers: int = 8) -> List[Dict]:
-    """
-    Одноразовая попытка собрать плейлист, используя geo_bypass при вызовах extract_info/fetch_full_entry_info.
-    Возвращаем все успешные записи (частичные результаты допустимы).
-    """
-    try:
-        full_try = extract_info(url, extract_flat=False, geo_bypass=True)
-        tracks = []
-        if full_try and full_try.get("entries"):
-            for e in full_try.get("entries"):
-                webpage = e.get("webpage_url") or e.get("url")
-                if not webpage:
-                    fi = fetch_full_entry_info(e.get("id") or e.get("url"), geo_bypass=True)
-                    if fi:
-                        tracks.append(fi)
-                    continue
-                tracks.append({
-                    "id": e.get("id"),
-                    "title": e.get("title") or webpage,
-                    "artist": e.get("uploader") or "",
-                    "duration": e.get("duration") or 0,
-                    "url": webpage,
-                })
-            return tracks
-    except Exception:
-        pass
-    return []
-
-# -----------------------
-# Запуск (без автопоиска proxy)
-# -----------------------
 if __name__ == "__main__":
     try:
-        print("Запускаю SoundCloud TUI (yt-dlp backend). Прокси отключены — работаем напрямую.")
+        print("🚀 Запускаю SoundCloud TUI с АГРЕССИВНЫМ обходом geo...")
         Player().run()
     except KeyboardInterrupt:
         try:
