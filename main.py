@@ -13,13 +13,24 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 # Автоустановка зависимостей
-REQUIRED = ["textual", "pygame-ce", "yt-dlp", "requests"]
+REQUIRED = ["textual", "yt_dlp", "requests"]
+
+missing = []
 for pkg in REQUIRED:
     try:
-        __import__(pkg.replace("-", "_"))
+            __import__(pkg)
     except ImportError:
-        print(f"Устанавливаю {pkg}...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "-q"])
+        missing.append(pkg)
+
+    if missing:
+        print("\n❌ Не установлены библиотеки:")
+        for m in missing:
+            print(" -", m)
+        print("\n✅ Установи их вручную:")
+        print("pip install textual pygame-ce yt-dlp requests")
+        print("\n⚠ На Linux обязательно запускать из venv:")
+        print("source venv/bin/activate")
+        sys.exit(1)
 
 import yt_dlp
 import requests
@@ -29,7 +40,7 @@ from textual.widgets import Header, Footer, Input, ListView, ListItem, Label, St
 try:
     import pygame.mixer as mixer
 except Exception:
-    from pygame_ce import mixer
+    from pygame import mixer
 
 mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
 
