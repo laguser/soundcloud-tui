@@ -241,7 +241,9 @@ def get_track_full_info(track_url: str) -> Optional[Dict]:
                     "url": info.get("webpage_url") or track_url,
                 }
     except Exception as e:
-        print(f"  ⚠️ Не удалось загрузить {track_url[:50]}: {e}")
+        print("❌ get_track_full_info ERROR:")
+        print("URL:", track_url)
+        print("ERR:", repr(e))
     return None
 
 
@@ -303,15 +305,19 @@ def simple_playlist_extract(url: str, progress_callback=None) -> List[Dict]:
                     print(f"  ⚠️ Трек {i} пропущен (пустая запись)")
                     continue
 
-                track_url = entry.get("url") or entry.get("webpage_url") or entry.get("id")
+                track_url = (
+                        entry.get("webpage_url")
+                        or entry.get("url")
+                        or entry.get("original_url")
+                )
 
                 if not track_url:
-                    print(f"  ⚠️ Трек {i} пропущен (нет URL)")
+                    print("⚠️ entry без URL:", entry)
                     continue
 
-                # Если URL относительный, делаем полным
                 if not track_url.startswith("http"):
-                    track_url = f"https://soundcloud.com{track_url if track_url.startswith('/') else '/' + track_url}"
+                    track_url = f"https://soundcloud.com/{track_url.lstrip('/')}"
+
 
                 track_urls.append(track_url)
 
@@ -365,10 +371,16 @@ def simple_playlist_extract(url: str, progress_callback=None) -> List[Dict]:
             return tracks
 
     except Exception as e:
-        print(f"❌ Критическая ошибка: {e}")
+        print("❌ yt-dlp КРАШНУЛСЯ:")
         import traceback
         traceback.print_exc()
+        try:
+            with open("yt_error.log", "w", encoding="utf-8") as f:
+                traceback.print_exc(file=f)
+        except:
+            pass
         return []
+
 
 
 def search_yt_dlp(query: str, max_results: int = 50) -> List[Dict]:
