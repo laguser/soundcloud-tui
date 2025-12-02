@@ -1,4 +1,3 @@
-
 from typing import List, Dict, Optional
 import platform
 import asyncio
@@ -18,19 +17,19 @@ REQUIRED = ["textual", "yt_dlp", "requests"]
 missing = []
 for pkg in REQUIRED:
     try:
-            __import__(pkg)
+        __import__(pkg)
     except ImportError:
         missing.append(pkg)
 
-    if missing:
-        print("\n❌ Не установлены библиотеки:")
-        for m in missing:
-            print(" -", m)
-        print("\n✅ Установи их вручную:")
-        print("pip install textual pygame-ce yt-dlp requests")
-        print("\n⚠ На Linux обязательно запускать из venv:")
-        print("source venv/bin/activate")
-        sys.exit(1)
+if missing:
+    print("\n❌ Не установлены библиотеки:")
+    for m in missing:
+        print(" -", m)
+    print("\n✅ Установи их вручную:")
+    print("pip install textual pygame-ce yt-dlp requests")
+    print("\n⚠ На Linux обязательно запускать из venv:")
+    print("source venv/bin/activate")
+    sys.exit(1)
 
 import yt_dlp
 import requests
@@ -140,27 +139,64 @@ def get_ydl_opts(outdir: str, use_ffmpeg: bool) -> dict:
         "format": "bestaudio/best",
         "outtmpl": os.path.join(outdir, "%(id)s.%(ext)s"),
 
+        # Настройки для работы с SoundCloud
+        "extractor_args": {
+            "soundcloud": {
+                "client_id": "iZIs9mchVcX5lhVRyQGGAYlNPVldzAoX",  # Важно для Linux
+            }
+        },
+
         "geo_bypass": True,
         "geo_bypass_country": "US",
+        "prefer_ipv4": True,
+        "force_ipv4": True,
 
         "nocheckcertificate": True,
         "ignoreerrors": True,
 
         "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
         },
 
         "retries": 10,
         "fragment_retries": 10,
+        "skip_unavailable_fragments": True,
+        "no_part": True,
+        "no_check_certificate": True,
     }
 
-    # ✅ ТОЛЬКО НА LINUX — ВКЛЮЧАЕМ COOKIES
+    # ✅ Специальные настройки для Linux
     if IS_LINUX:
+        # Форсируем использование cookies если есть
         if COOKIES_PATH.exists():
             opts["cookiefile"] = str(COOKIES_PATH)
+            print("✅ Linux: Использую cookies.txt")
         else:
-            print("❗ LINUX: НЕТ cookies.txt — загрузка может не работать")
+            print("⚠ Linux: cookies.txt не найден, использую стандартный доступ")
+
+        # Для Linux используем более надежные настройки
+        opts["socket_timeout"] = 30
+        opts["source_address"] = "0.0.0.0"
+        opts["force_generic_extractor"] = False
+
+        # Пробуем разные client_id для SoundCloud
+        opts["extractor_args"]["soundcloud"] = {
+            "client_id": [
+                "iZIs9mchVcX5lhVRyQGGAYlNPVldzAoX",  # основной
+                "LvWovRaJZlqN2qFgVUeJXzKwd8g209lA",  # резервный 1
+                "e2f5a57c2d9d87a7ff6d7d81e8c6f8b7",  # резервный 2
+                "02gUJC0hH2ct1EGOcYXQIzRFU91c72Ea"  # резервный 3
+            ]
+        }
 
     if use_ffmpeg:
         opts["postprocessors"] = [{
@@ -172,36 +208,70 @@ def get_ydl_opts(outdir: str, use_ffmpeg: bool) -> dict:
     return opts
 
 
-
-
 def download_track_file(url: str, outdir: Optional[str] = None) -> str:
     if outdir is None:
         outdir = ensure_temp_dir()
     use_ffmpeg = has_ffmpeg()
     ydl_opts = get_ydl_opts(outdir, use_ffmpeg)
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        try:
-            filename = ydl.prepare_filename(info)
-        except Exception:
-            filename = None
+    print(f"🌐 Начинаю загрузку: {url}")
+    print(f"📁 Директория: {outdir}")
+    print(f"🔧 FFmpeg: {'Есть' if use_ffmpeg else 'Нет'}")
 
-    if filename and os.path.exists(filename):
-        return filename
+    # Для отладки на Linux
+    if IS_LINUX:
+        print("🐧 Linux режим активен")
+        if COOKIES_PATH.exists():
+            print(f"🍪 Cookies файл: {COOKIES_PATH}")
 
-    file_id = info.get("id")
-    if file_id:
-        for fn in os.listdir(outdir):
-            if fn.startswith(file_id):
-                return os.path.join(outdir, fn)
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Пробуем получить информацию без загрузки сначала
+            info = ydl.extract_info(url, download=False)
+            if not info:
+                raise Exception("Не удалось получить информацию о треке")
 
-    files = [os.path.join(outdir, f) for f in os.listdir(outdir)]
-    if files:
-        files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-        return files[0]
+            print(f"📊 Получена информация: {info.get('title', 'Unknown')}")
+            print(f"🔗 Форматы доступны: {len(info.get('formats', []))}")
 
-    raise FileNotFoundError("Не удалось найти скачанный файл")
+            # Теперь загружаем
+            ydl.download([url])
+
+            # Пытаемся найти скачанный файл
+            try:
+                filename = ydl.prepare_filename(info)
+            except Exception:
+                filename = None
+
+        if filename and os.path.exists(filename):
+            print(f"✅ Файл найден: {filename}")
+            return filename
+
+        file_id = info.get("id")
+        if file_id:
+            for fn in os.listdir(outdir):
+                if fn.startswith(file_id):
+                    found = os.path.join(outdir, fn)
+                    print(f"✅ Найден по ID: {found}")
+                    return found
+
+        files = [os.path.join(outdir, f) for f in os.listdir(outdir)
+                 if os.path.isfile(os.path.join(outdir, f))]
+        if files:
+            files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+            print(f"✅ Найден последний файл: {files[0]}")
+            return files[0]
+
+        raise FileNotFoundError("Не удалось найти скачанный файл")
+
+    except Exception as e:
+        print(f"❌ Ошибка при загрузке: {e}")
+        if IS_LINUX:
+            print("🐧 Для Linux попробуйте:")
+            print("1. Убедитесь, что yt-dlp обновлен: pip install -U yt-dlp")
+            print("2. Создайте файл cookies.txt из браузера")
+            print("3. Попробуйте запустить с VPN")
+        raise
 
 
 def get_track_full_info(track_url: str) -> Optional[Dict]:
@@ -209,8 +279,15 @@ def get_track_full_info(track_url: str) -> Optional[Dict]:
     ydl_opts = {
         "quiet": True,
         "skip_download": True,
-        "verbose": True,
-        "logger": None,
+        "no_warnings": True,
+
+        # Критические настройки для SoundCloud
+        "extractor_args": {
+            "soundcloud": {
+                "client_id": "iZIs9mchVcX5lhVRyQGGAYlNPVldzAoX"
+            }
+        },
+
         "geo_bypass": True,
         "geo_bypass_country": "US",
         "prefer_ipv4": True,
@@ -220,20 +297,31 @@ def get_track_full_info(track_url: str) -> Optional[Dict]:
         "nocheckcertificate": True,
         "ignoreerrors": True,
 
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "ios"],
-                "player_skip": ["js"]
-            }
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://soundcloud.com/",
+            "Origin": "https://soundcloud.com",
         },
 
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 13)",
-            "Referer": "https://www.google.com/"
-        }
+        "socket_timeout": 15,
+        "extract_flat": False,
     }
-    if IS_LINUX and COOKIES_PATH.exists():
-        ydl_opts["cookiefile"] = str(COOKIES_PATH)
+
+    # Дополнительные настройки для Linux
+    if IS_LINUX:
+        if COOKIES_PATH.exists():
+            ydl_opts["cookiefile"] = str(COOKIES_PATH)
+            print("🍪 Использую cookies для получения информации")
+
+        ydl_opts["extractor_args"]["soundcloud"] = {
+            "client_id": [
+                "iZIs9mchVcX5lhVRyQGGAYlNPVldzAoX",
+                "LvWovRaJZlqN2qFgVUeJXzKwd8g209lA",
+                "e2f5a57c2d9d87a7ff6d7d81e8c6f8b7"
+            ]
+        }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -242,45 +330,95 @@ def get_track_full_info(track_url: str) -> Optional[Dict]:
                 return {
                     "id": info.get("id"),
                     "title": info.get("title") or "Unknown",
-                    "artist": info.get("uploader") or info.get("artist") or "",
+                    "artist": info.get("uploader") or info.get("artist") or info.get("creator") or "",
                     "duration": info.get("duration") or 0,
                     "url": info.get("webpage_url") or track_url,
                 }
     except Exception as e:
-        print("❌ get_track_full_info ERROR:")
-        print("URL:", track_url)
-        print("ERR:", repr(e))
+        print(f"❌ Ошибка получения информации: {type(e).__name__}: {e}")
+        if IS_LINUX:
+            print("🐧 Проблема на Linux. Пробую альтернативный метод...")
+            # Пробуем альтернативный метод для Linux
+            return get_track_info_alternative(track_url)
+    return None
+
+
+def get_track_info_alternative(track_url: str) -> Optional[Dict]:
+    """Альтернативный метод получения информации для Linux"""
+    try:
+        # Используем curl для получения информации
+        cmd = [
+            "yt-dlp",
+            "--skip-download",
+            "--print-json",
+            "--no-warnings",
+            "--force-ipv4",
+            track_url
+        ]
+
+        if COOKIES_PATH.exists():
+            cmd.extend(["--cookies", str(COOKIES_PATH)])
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode == 0 and result.stdout:
+            info = json.loads(result.stdout)
+            return {
+                "id": info.get("id"),
+                "title": info.get("title") or "Unknown",
+                "artist": info.get("uploader") or info.get("artist") or "",
+                "duration": info.get("duration") or 0,
+                "url": info.get("webpage_url") or track_url,
+            }
+    except Exception as e:
+        print(f"❌ Альтернативный метод тоже не сработал: {e}")
+
     return None
 
 
 def simple_playlist_extract(url: str, progress_callback=None) -> List[Dict]:
     """БЫСТРОЕ извлечение плейлиста с параллельной загрузкой"""
 
-    # Шаг 1: Быстро получаем список ID треков
+    # Проверяем, это SoundCloud или YouTube
+    is_soundcloud = "soundcloud.com" in url or "snd.sc" in url
+
     ydl_opts_flat = {
         "quiet": True,
-        "extract_flat": "in_playlist",
+        "extract_flat": True,
+        "force_ipv4": True,
+        "prefer_ipv4": True,
+        "no_warnings": True,
 
         "geo_bypass": True,
         "geo_bypass_country": "US",
-        "prefer_ipv4": True,
-        "force_ipv4": True,
-        "source_address": "0.0.0.0",
 
         "nocheckcertificate": True,
         "ignoreerrors": False,
 
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "ios"]
-            }
-        },
-
         "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 13)",
-            "Referer": "https://www.google.com/"
-        }
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
     }
+
+    # Настройки для SoundCloud
+    if is_soundcloud:
+        ydl_opts_flat["extractor_args"] = {
+            "soundcloud": {
+                "client_id": "iZIs9mchVcX5lhVRyQGGAYlNPVldzAoX"
+            }
+        }
+
+    # Для Linux добавляем cookies
+    if IS_LINUX and COOKIES_PATH.exists():
+        ydl_opts_flat["cookiefile"] = str(COOKIES_PATH)
+        print("🍪 Использую cookies для плейлиста")
 
     try:
         print(f"📡 Получаю список треков...")
@@ -311,19 +449,28 @@ def simple_playlist_extract(url: str, progress_callback=None) -> List[Dict]:
                     print(f"  ⚠️ Трек {i} пропущен (пустая запись)")
                     continue
 
-                track_url = (
-                        entry.get("webpage_url")
-                        or entry.get("url")
-                        or entry.get("original_url")
-                )
+                # Для SoundCloud нужен особый подход
+                if is_soundcloud:
+                    track_url = entry.get("url")
+                    if not track_url:
+                        track_id = entry.get("id")
+                        if track_id:
+                            track_url = f"https://soundcloud.com/track-{track_id}"
+                else:
+                    track_url = (
+                            entry.get("webpage_url") or
+                            entry.get("url") or
+                            entry.get("original_url")
+                    )
 
                 if not track_url:
-                    print("⚠️ entry без URL:", entry)
                     continue
 
                 if not track_url.startswith("http"):
-                    track_url = f"https://soundcloud.com/{track_url.lstrip('/')}"
-
+                    if is_soundcloud:
+                        track_url = f"https://soundcloud.com/{track_url.lstrip('/')}"
+                    else:
+                        track_url = f"https://youtube.com/watch?v={track_url}"
 
                 track_urls.append(track_url)
 
@@ -333,16 +480,15 @@ def simple_playlist_extract(url: str, progress_callback=None) -> List[Dict]:
 
             print(f"🚀 Загружаю информацию о {len(track_urls)} треках параллельно (10 потоков)...")
 
-            # Шаг 2: ПАРАЛЛЕЛЬНАЯ загрузка полной информации
+            # Параллельная загрузка информации
             tracks = []
             total = len(track_urls)
             completed = 0
 
             with ThreadPoolExecutor(max_workers=10) as executor:
-                future_to_index = {executor.submit(get_track_full_info, url): (idx, url) for idx, url in
-                                   enumerate(track_urls)}
+                future_to_index = {executor.submit(get_track_full_info, url): (idx, url)
+                                   for idx, url in enumerate(track_urls)}
 
-                # Собираем результаты с сохранением порядка
                 results = [None] * len(track_urls)
 
                 for future in as_completed(future_to_index):
@@ -354,7 +500,6 @@ def simple_playlist_extract(url: str, progress_callback=None) -> List[Dict]:
                         if result:
                             results[idx] = result
 
-                        # Обновляем прогресс
                         if progress_callback:
                             progress_callback(completed, total)
 
@@ -363,7 +508,7 @@ def simple_playlist_extract(url: str, progress_callback=None) -> List[Dict]:
                     except Exception as e:
                         print(f"  ❌ Ошибка при обработке трека {idx + 1}: {e}")
 
-            # Фильтруем None и собираем результаты в правильном порядке
+            # Фильтруем None и собираем результаты
             tracks = [t for t in results if t is not None]
 
             if not tracks:
@@ -377,26 +522,37 @@ def simple_playlist_extract(url: str, progress_callback=None) -> List[Dict]:
             return tracks
 
     except Exception as e:
-        print("❌ yt-dlp КРАШНУЛСЯ:")
+        print(f"❌ Ошибка при извлечении плейлиста: {type(e).__name__}: {e}")
         import traceback
         traceback.print_exc()
-        try:
-            with open("yt_error.log", "w", encoding="utf-8") as f:
-                traceback.print_exc(file=f)
-        except:
-            pass
         return []
 
 
-
 def search_yt_dlp(query: str, max_results: int = 50) -> List[Dict]:
+    """Поиск треков через yt-dlp"""
     search_url = f"ytsearch{max_results}:{query}"
+
     ydl_opts = {
         "quiet": False,
-        "nocheckcertificate": True,
+        "no_warnings": True,
+        "force_ipv4": True,
+        "prefer_ipv4": True,
+        "extract_flat": True,
+
         "geo_bypass": True,
+        "geo_bypass_country": "US",
+
+        "nocheckcertificate": True,
         "ignoreerrors": True,
+
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        }
     }
+
+    # Для Linux добавляем cookies
+    if IS_LINUX and COOKIES_PATH.exists():
+        ydl_opts["cookiefile"] = str(COOKIES_PATH)
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -415,7 +571,7 @@ def search_yt_dlp(query: str, max_results: int = 50) -> List[Dict]:
                     })
             return results
     except Exception as e:
-        print(f"Ошибка поиска: {e}")
+        print(f"❌ Ошибка поиска: {e}")
         return []
 
 
@@ -476,7 +632,15 @@ class Player(App):
         with Static(id="track_progress_container"):
             yield ProgressBar(total=100, show_eta=False, id="track_progress")
             yield Static("0:00/0:00 (-0:00)", id="track_time_label")
-        yield Static("🎵 Готово. Ctrl+H — история", id="status")
+
+        # Показываем информацию о системе
+        system_info = "🐧 Linux режим" if IS_LINUX else "🪟 Windows режим"
+        if IS_LINUX and COOKIES_PATH.exists():
+            system_info += " (с cookies)"
+        elif IS_LINUX:
+            system_info += " (без cookies)"
+
+        yield Static(f"🎵 {system_info} | Ctrl+H — история", id="status")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -485,6 +649,20 @@ class Player(App):
         self.query_one(Input).focus()
         self.query_one("#progress_container").display = False
         self.query_one("#track_progress_container").display = False
+
+        # Выводим информацию о системе
+        print("=" * 50)
+        print(f"Система: {platform.system()} {platform.release()}")
+        print(f"Python: {platform.python_version()}")
+        print(f"Директория: {APP_DIR}")
+        if IS_LINUX:
+            print("🐧 Linux режим активирован")
+            if COOKIES_PATH.exists():
+                print(f"✅ Найден cookies.txt: {COOKIES_PATH}")
+            else:
+                print("⚠ cookies.txt не найден - некоторые функции могут не работать")
+        print("=" * 50)
+
         # Запускаем обновление прогресса
         self.update_timer = asyncio.create_task(self._update_track_progress())
 
@@ -503,7 +681,6 @@ class Player(App):
 
                 if self.current_track and mixer.music.get_busy():
                     try:
-                        # Получаем текущую позицию в миллисекундах
                         pos_ms = mixer.music.get_pos()
                         if pos_ms < 0:
                             continue
@@ -512,12 +689,10 @@ class Player(App):
                         duration = self.current_track.get("duration", 0)
 
                         if duration > 0:
-                            # Обновляем прогресс-бар
                             progress = min(100, int((pos_sec / duration) * 100))
                             track_progress = self.query_one("#track_progress", ProgressBar)
                             track_progress.update(progress=int(pos_sec), total=int(duration))
 
-                            # Обновляем время
                             current_time = format_duration(int(pos_sec))
                             total_time = format_duration(duration)
                             remaining = format_duration(int(duration - pos_sec))
@@ -781,10 +956,32 @@ class Player(App):
 
 if __name__ == "__main__":
     try:
-        print("🚀 Запуск...")
+        print("🚀 Запуск TUI-плеера для SoundCloud...")
+        print("=" * 50)
+
+        # Проверяем yt-dlp
+        try:
+            import yt_dlp
+
+            print(f"✅ yt-dlp версия: {yt_dlp.version.__version__}")
+        except:
+            print("❌ yt-dlp не найден")
+            print("Установите: pip install -U yt-dlp")
+
+        # Для Linux даем дополнительные инструкции
+        if IS_LINUX:
+            print("\n🐧 Инструкция для Linux:")
+            print("1. Обновите yt-dlp: pip install -U yt-dlp")
+            print("2. Для лучшей работы создайте cookies.txt:")
+            print("   - Установите расширение для браузера (cookies.txt)")
+            print("   - Экспортируйте cookies с soundcloud.com")
+            print("   - Положите файл cookies.txt в папку с программой")
+            print("3. При проблемах попробуйте запустить с VPN")
+            print("=" * 50)
+
         Player().run()
     except KeyboardInterrupt:
         try:
             cleanup_temp_dir()
         finally:
-            print("Выход...")
+            print("\n👋 Выход...")
