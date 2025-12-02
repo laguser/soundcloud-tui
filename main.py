@@ -121,17 +121,43 @@ def cleanup_old_files(max_age_seconds: int = 3600) -> None:
 
 
 def get_ydl_opts(outdir: str, use_ffmpeg: bool) -> dict:
-    """Максимально простые и работающие опции"""
     opts = {
         "format": "bestaudio/best",
         "outtmpl": os.path.join(outdir, "%(id)s.%(ext)s"),
-        "quiet": False,
-        "no_warnings": False,
-        "extract_flat": False,
+
+        # 🔥 ЖЁСТКИЙ GEO FIX БЕЗ PROXY
+        "geo_bypass": True,
+        "geo_bypass_country": "US",
+        "prefer_ipv4": True,
+        "force_ipv4": True,
+        "source_address": "0.0.0.0",
+
+        # 🔥 FIX LINUX TLS / CERT
         "nocheckcertificate": True,
         "ignoreerrors": True,
-        "geo_bypass": True,
-        "force_generic_extractor": False,
+
+        # 🔥 Реальные мобильные клиенты (самое важное)
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "ios"],
+                "player_skip": ["js", "configs"]
+            },
+            "soundcloud": {
+                "client_id": ["web", "mobile"]
+            }
+        },
+
+        # 🔥 Подмена отпечатка браузера
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-G991B)",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.google.com/"
+        },
+
+        "retries": 10,
+        "fragment_retries": 10,
+        "quiet": False,
+        "no_warnings": False,
     }
 
     if use_ffmpeg:
@@ -142,6 +168,7 @@ def get_ydl_opts(outdir: str, use_ffmpeg: bool) -> dict:
         }]
 
     return opts
+
 
 
 def download_track_file(url: str, outdir: Optional[str] = None) -> str:
@@ -178,10 +205,28 @@ def get_track_full_info(track_url: str) -> Optional[Dict]:
     """Быстрое получение информации о треке"""
     ydl_opts = {
         "quiet": True,
-        "nocheckcertificate": True,
-        "geo_bypass": True,
-        "ignoreerrors": True,
         "skip_download": True,
+
+        "geo_bypass": True,
+        "geo_bypass_country": "US",
+        "prefer_ipv4": True,
+        "force_ipv4": True,
+        "source_address": "0.0.0.0",
+
+        "nocheckcertificate": True,
+        "ignoreerrors": True,
+
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "ios"],
+                "player_skip": ["js"]
+            }
+        },
+
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 13)",
+            "Referer": "https://www.google.com/"
+        }
     }
 
     try:
@@ -207,9 +252,26 @@ def simple_playlist_extract(url: str, progress_callback=None) -> List[Dict]:
     ydl_opts_flat = {
         "quiet": True,
         "extract_flat": "in_playlist",
-        "nocheckcertificate": True,
+
         "geo_bypass": True,
-        "ignoreerrors": False,  # Не игнорируем ошибки на этом этапе
+        "geo_bypass_country": "US",
+        "prefer_ipv4": True,
+        "force_ipv4": True,
+        "source_address": "0.0.0.0",
+
+        "nocheckcertificate": True,
+        "ignoreerrors": False,
+
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "ios"]
+            }
+        },
+
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 13)",
+            "Referer": "https://www.google.com/"
+        }
     }
 
     try:
