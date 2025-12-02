@@ -123,6 +123,8 @@ def cleanup_old_files(max_age_seconds: int = 3600) -> None:
 def get_ydl_opts(outdir: str, use_ffmpeg: bool) -> dict:
     opts = {
         "format": "bestaudio/best",
+        "verbose": True,
+        "logger": None,
         "outtmpl": os.path.join(outdir, "%(id)s.%(ext)s"),
 
         # 🔥 ЖЁСТКИЙ GEO FIX БЕЗ PROXY
@@ -206,7 +208,8 @@ def get_track_full_info(track_url: str) -> Optional[Dict]:
     ydl_opts = {
         "quiet": True,
         "skip_download": True,
-
+        "verbose": True,
+        "logger": None,
         "geo_bypass": True,
         "geo_bypass_country": "US",
         "prefer_ipv4": True,
