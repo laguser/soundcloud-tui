@@ -1,4 +1,6 @@
+
 from typing import List, Dict, Optional
+import platform
 import asyncio
 import subprocess
 import sys
@@ -33,6 +35,8 @@ mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
 
 APP_DIR = Path.cwd()
 HISTORY_FILE = APP_DIR / "history.json"
+IS_LINUX = platform.system().lower() == "linux"
+COOKIES_PATH = APP_DIR / "cookies.txt"
 
 temp_dir: Optional[str] = None
 current_file: Optional[str] = None
@@ -123,44 +127,29 @@ def cleanup_old_files(max_age_seconds: int = 3600) -> None:
 def get_ydl_opts(outdir: str, use_ffmpeg: bool) -> dict:
     opts = {
         "format": "bestaudio/best",
-        "verbose": True,
-        "logger": None,
         "outtmpl": os.path.join(outdir, "%(id)s.%(ext)s"),
 
-        # 🔥 ЖЁСТКИЙ GEO FIX БЕЗ PROXY
         "geo_bypass": True,
         "geo_bypass_country": "US",
-        "prefer_ipv4": True,
-        "force_ipv4": True,
-        "source_address": "0.0.0.0",
 
-        # 🔥 FIX LINUX TLS / CERT
         "nocheckcertificate": True,
         "ignoreerrors": True,
 
-        # 🔥 Реальные мобильные клиенты (самое важное)
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "ios"],
-                "player_skip": ["js", "configs"]
-            },
-            "soundcloud": {
-                "client_id": ["web", "mobile"]
-            }
-        },
-
-        # 🔥 Подмена отпечатка браузера
         "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-G991B)",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.google.com/"
         },
 
         "retries": 10,
         "fragment_retries": 10,
-        "quiet": False,
-        "no_warnings": False,
     }
+
+    # ✅ ТОЛЬКО НА LINUX — ВКЛЮЧАЕМ COOKIES
+    if IS_LINUX:
+        if COOKIES_PATH.exists():
+            opts["cookiefile"] = str(COOKIES_PATH)
+        else:
+            print("❗ LINUX: НЕТ cookies.txt — загрузка может не работать")
 
     if use_ffmpeg:
         opts["postprocessors"] = [{
@@ -170,6 +159,7 @@ def get_ydl_opts(outdir: str, use_ffmpeg: bool) -> dict:
         }]
 
     return opts
+
 
 
 
@@ -231,6 +221,8 @@ def get_track_full_info(track_url: str) -> Optional[Dict]:
             "Referer": "https://www.google.com/"
         }
     }
+    if IS_LINUX and COOKIES_PATH.exists():
+        ydl_opts["cookiefile"] = str(COOKIES_PATH)
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
