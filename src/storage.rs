@@ -91,12 +91,33 @@ pub struct DataStore {
 }
 
 impl DataStore {
-    fn config_path() -> PathBuf {
+    pub fn config_path() -> PathBuf {
         let mut path = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
         path.push("soundcloud-tui");
         fs::create_dir_all(&path).ok();
         path.push("config.json");
         path
+    }
+
+    pub fn cache_dir() -> PathBuf {
+        let mut path = dirs::cache_dir().unwrap_or_else(|| PathBuf::from("."));
+        path.push("soundcloud-tui");
+        path.push("tracks");
+        fs::create_dir_all(&path).ok();
+        path
+    }
+
+    pub fn get_cached_track_path(id: &str) -> Option<PathBuf> {
+        if id.is_empty() {
+            return None;
+        }
+        let safe_name: String = id.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect();
+        let path = Self::cache_dir().join(format!("{}.mp3", safe_name));
+        if path.exists() && fs::metadata(&path).map(|m| m.len() > 10240).unwrap_or(false) {
+            Some(path)
+        } else {
+            None
+        }
     }
 
     pub fn load() -> Self {

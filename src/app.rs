@@ -122,10 +122,20 @@ impl App {
     }
 
     pub fn play_track(&mut self, track: TrackItem) {
-        self.set_status(&format!("Streaming: {}", track.title));
-        
-        let play_url = track.stream_url.clone().unwrap_or_else(|| track.url.clone());
-        self.player.play(&play_url);
+        // 1. Check local on-disk cache
+        if let Some(cached_file) = crate::storage::DataStore::get_cached_track_path(&track.id) {
+            let path_str = cached_file.to_string_lossy().to_string();
+            self.set_status(&format!("Playing (cached): {}", track.title));
+            self.player.play(&path_str);
+        } else if let Some(resolved) = crate::search::SearchEngine::resolve_stream_url(&track, &self.search_engine.cached_client_id) {
+            self.set_status(&format!("Streaming (fast): {}", track.title));
+            self.player.play(&resolved);
+        } else {
+            self.set_status(&format!("Streaming: {}", track.title));
+            let play_url = track.stream_url.clone().unwrap_or_else(|| track.url.clone());
+            self.player.play(&play_url);
+        }
+
         self.store.add_history(track.clone());
 
         // Put in queue if not present or select it

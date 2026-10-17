@@ -12,8 +12,7 @@ pub enum SearchResult {
 pub struct SearchEngine {
     tx: Sender<(String, bool)>, // (query, is_playlist_or_url)
     rx: Receiver<SearchResult>,
-    #[allow(dead_code)]
-    cached_client_id: Arc<Mutex<Option<String>>>,
+    pub cached_client_id: Arc<Mutex<Option<String>>>,
 }
 
 impl SearchEngine {
@@ -49,8 +48,12 @@ impl SearchEngine {
         self.rx.try_recv().ok()
     }
 
-    #[allow(dead_code)]
     pub fn resolve_stream_url(track: &TrackItem, client_id_holder: &Arc<Mutex<Option<String>>>) -> Option<String> {
+        // 1. Check local on-disk cache first
+        if let Some(cached_file) = crate::storage::DataStore::get_cached_track_path(&track.id) {
+            return Some(cached_file.to_string_lossy().to_string());
+        }
+
         if let Some(stream) = &track.stream_url {
             return Some(stream.clone());
         }
@@ -69,7 +72,7 @@ impl SearchEngine {
         let output = Command::new("curl")
             .arg("-s")
             .arg("-m")
-            .arg("5")
+            .arg("4")
             .arg("-H")
             .arg("User-Agent: Mozilla/5.0")
             .arg(&api_url)
@@ -79,25 +82,44 @@ impl SearchEngine {
         if output.status.success() {
             if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
                 if let Some(transcodings) = v.get("media").and_then(|m| m.get("transcodings")).and_then(|t| t.as_array()) {
+                    // Prefer progressive format for instant seek and fast playback
+                    let mut chosen_url = None;
                     for tr in transcodings {
-                        if let Some(tr_url) = tr.get("url").and_then(|u| u.as_str()) {
-                            let stream_lookup = format!("{}?client_id={}", tr_url, cid);
-                            let stream_res = Command::new("curl")
-                                .arg("-s")
-                                .arg("-m")
-                                .arg("4")
-                                .arg("-H")
-                                .arg("User-Agent: Mozilla/5.0")
-                                .arg(&stream_lookup)
-                                .output()
-                                .ok();
+                        if tr.get("format").and_then(|f| f.get("protocol")).and_then(|p| p.as_str()) == Some("progressive") {
+                            chosen_url = tr.get("url").and_then(|u| u.as_str());
+                            break;
+                        }
+                    }
+                    if chosen_url.is_none() && !transcodings.is_empty() {
+                        chosen_url = transcodings[0].get("url").and_then(|u| u.as_str());
+                    }
 
-                            if let Some(s_out) = stream_res {
-                                if s_out.status.success() {
-                                    if let Ok(sv) = serde_json::from_slice::<serde_json::Value>(&s_out.stdout) {
-                                        if let Some(direct_url) = sv.get("url").and_then(|u| u.as_str()) {
-                                            return Some(direct_url.to_string());
-                                        }
+                    if let Some(tr_url) = chosen_url {
+                        let stream_lookup = format!("{}?client_id={}", tr_url, cid);
+                        let stream_res = Command::new("curl")
+                            .arg("-s")
+                            .arg("-m")
+                            .arg("3")
+                            .arg("-H")
+                            .arg("User-Agent: Mozilla/5.0")
+                            .arg(&stream_lookup)
+                            .output()
+                            .ok();
+
+                        if let Some(s_out) = stream_res {
+                            if s_out.status.success() {
+                                if let Ok(sv) = serde_json::from_slice::<serde_json::Value>(&s_out.stdout) {
+                                    if let Some(direct_url) = sv.get("url").and_then(|u| u.as_str()) {
+                                        let resolved = direct_url.to_string();
+
+                                        // Spawn background cache downloader
+                                        let track_id_clean = track.id.clone();
+                                        let stream_copy = resolved.clone();
+                                        thread::spawn(move || {
+                                            Self::download_to_cache(&track_id_clean, &stream_copy);
+                                        });
+
+                                        return Some(resolved);
                                     }
                                 }
                             }
@@ -108,6 +130,32 @@ impl SearchEngine {
         }
 
         None
+    }
+
+    fn download_to_cache(track_id: &str, stream_url: &str) {
+        if track_id.is_empty() {
+            return;
+        }
+        let safe_name: String = track_id.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect();
+        let cache_file = crate::storage::DataStore::cache_dir().join(format!("{}.mp3", safe_name));
+        let tmp_file = cache_file.with_extension("tmp");
+
+        let _ = Command::new("curl")
+            .arg("-s")
+            .arg("-m")
+            .arg("120")
+            .arg("-H")
+            .arg("User-Agent: Mozilla/5.0")
+            .arg(stream_url)
+            .arg("-o")
+            .arg(&tmp_file)
+            .status();
+
+        if tmp_file.exists() && std::fs::metadata(&tmp_file).map(|m| m.len() > 10240).unwrap_or(false) {
+            let _ = std::fs::rename(tmp_file, cache_file);
+        } else {
+            let _ = std::fs::remove_file(tmp_file);
+        }
     }
 
     fn execute_search(

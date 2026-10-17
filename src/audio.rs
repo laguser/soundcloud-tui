@@ -110,7 +110,10 @@ impl AudioPlayer {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
                 if let Some(event) = v.get("event").and_then(|e| e.as_str()) {
                     if event == "end-file" {
-                        let _ = tx.send(PlayerEvent::PlaybackEnded);
+                        let reason = v.get("reason").and_then(|r| r.as_str()).unwrap_or("");
+                        if reason == "eof" {
+                            let _ = tx.send(PlayerEvent::PlaybackEnded);
+                        }
                     }
                 }
 
