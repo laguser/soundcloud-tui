@@ -50,6 +50,11 @@ sudo apt install mpv yt-dlp
 
 ### Installation
 
+#### Via Cargo (Recommended)
+```bash
+cargo install soundcloud-tui
+```
+
 #### Quick One-Liner (Build & Install)
 ```bash
 curl -sSL https://raw.githubusercontent.com/laguser/soundcloud-tui/main/install.sh | bash
@@ -109,6 +114,11 @@ sudo pacman -S mpv yt-dlp
 ```
 
 ### Установка
+
+#### Через Cargo (Рекомендуется):
+```bash
+cargo install soundcloud-tui
+```
 
 #### Быстрая установка одной командой:
 ```bash
