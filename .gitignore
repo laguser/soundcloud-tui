@@ -1,0 +1,4 @@
+/target
+old_version/
+*.tmp
+*.sock

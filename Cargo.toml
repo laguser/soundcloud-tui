@@ -1,0 +1,24 @@
+[package]
+name = "soundcloud-tui"
+version = "0.2.0"
+edition = "2021"
+authors = ["laguser <laguser@users.noreply.github.com>"]
+description = "A minimalist terminal SoundCloud & YouTube player for Linux in Rust, crafted with @ttype aesthetic."
+license = "MIT"
+repository = "https://github.com/laguser/soundcloud-tui"
+readme = "README.md"
+keywords = ["soundcloud", "music-player", "tui", "terminal", "linux"]
+categories = ["command-line-utilities", "multimedia::audio"]
+
+[[bin]]
+name = "sctui"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5.0"
+rand = "0.8"
