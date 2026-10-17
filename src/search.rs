@@ -17,10 +17,11 @@ pub struct SearchEngine {
 }
 
 impl SearchEngine {
-    pub fn new() -> Self {
+    pub fn new(initial_cid: Option<String>) -> Self {
         let (task_tx, task_rx) = channel::<(String, bool)>();
         let (res_tx, res_rx) = channel::<SearchResult>();
-        let cached_client_id = Arc::new(Mutex::new(Some("tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ".to_string())));
+        let cid_val = initial_cid.unwrap_or_else(|| "tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ".to_string());
+        let cached_client_id = Arc::new(Mutex::new(Some(cid_val)));
 
         let cid_clone = Arc::clone(&cached_client_id);
         thread::spawn(move || {

@@ -99,7 +99,7 @@ impl App {
             settings_cursor: 0,
 
             player,
-            search_engine: SearchEngine::new(),
+            search_engine: SearchEngine::new(store.config.client_id.clone()),
             discord,
             store,
 

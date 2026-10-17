@@ -82,6 +82,8 @@ pub struct Config {
     pub visual: VisualStyle,
     pub default_volume: u32,
     pub discord_rpc: bool,
+    pub client_id: Option<String>,
+    pub proxy: Option<String>,
     pub cookies_path: Option<String>,
 }
 
@@ -92,6 +94,8 @@ impl Default for Config {
             visual: VisualStyle::Tape,
             default_volume: 80,
             discord_rpc: true,
+            client_id: None,
+            proxy: None,
             cookies_path: None,
         }
     }
