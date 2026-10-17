@@ -4,30 +4,56 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+#[derive(Clone, Debug)]
+pub struct UserProfile {
+    pub id: String,
+    pub username: String,
+    pub permalink: String,
+    pub avatar_url: Option<String>,
+    pub description: Option<String>,
+    pub followers_count: u64,
+    pub track_count: usize,
+    pub tracks: Vec<TrackItem>,
+}
+
 pub enum SearchResult {
     Success(Vec<TrackItem>),
     PlaylistLoaded(crate::storage::PlaylistItem),
+    UserProfileLoaded(UserProfile),
     Error(String),
 }
 
+pub enum SearchTask {
+    Query(String, bool),
+    FetchUser(String), // username, permalink or user_id
+}
+
 pub struct SearchEngine {
-    tx: Sender<(String, bool)>, // (query, is_playlist_or_url)
+    tx: Sender<SearchTask>,
     rx: Receiver<SearchResult>,
     pub cached_client_id: Arc<Mutex<Option<String>>>,
 }
 
 impl SearchEngine {
     pub fn new(initial_cid: Option<String>) -> Self {
-        let (task_tx, task_rx) = channel::<(String, bool)>();
+        let (task_tx, task_rx) = channel::<SearchTask>();
         let (res_tx, res_rx) = channel::<SearchResult>();
         let cid_val = initial_cid.unwrap_or_else(|| "tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ".to_string());
         let cached_client_id = Arc::new(Mutex::new(Some(cid_val)));
 
         let cid_clone = Arc::clone(&cached_client_id);
         thread::spawn(move || {
-            while let Ok((query, is_direct_url)) = task_rx.recv() {
-                let result = Self::execute_search(&query, is_direct_url, &cid_clone);
-                let _ = res_tx.send(result);
+            while let Ok(task) = task_rx.recv() {
+                match task {
+                    SearchTask::Query(query, is_direct_url) => {
+                        let result = Self::execute_search(&query, is_direct_url, &cid_clone);
+                        let _ = res_tx.send(result);
+                    }
+                    SearchTask::FetchUser(user_query) => {
+                        let result = Self::execute_fetch_user(&user_query, &cid_clone);
+                        let _ = res_tx.send(result);
+                    }
+                }
             }
         });
 
@@ -43,7 +69,22 @@ impl SearchEngine {
             || query.starts_with("https://")
             || query.starts_with("soundcloud.com/")
             || query.starts_with("snd.sc/");
-        let _ = self.tx.send((query.to_string(), is_url));
+        let _ = self.tx.send(SearchTask::Query(query.to_string(), is_url));
+    }
+
+    pub fn fetch_user(&self, user_query: &str) {
+        let _ = self.tx.send(SearchTask::FetchUser(user_query.to_string()));
+    }
+
+    pub fn prefetch_track(track: &TrackItem, client_id_holder: &Arc<Mutex<Option<String>>>) {
+        if crate::storage::DataStore::get_cached_track_path(&track.id).is_some() {
+            return;
+        }
+        let track_clone = track.clone();
+        let holder = Arc::clone(client_id_holder);
+        thread::spawn(move || {
+            let _ = Self::resolve_stream_url(&track_clone, &holder);
+        });
     }
 
     pub fn poll_result(&self) -> Option<SearchResult> {
@@ -255,25 +296,75 @@ impl SearchEngine {
                             let mut playlist_tracks = Vec::new();
 
                             if let Some(track_array) = v.get("tracks").and_then(|t| t.as_array()) {
+                                let mut stub_ids = Vec::new();
                                 for t in track_array {
                                     let t_id = t.get("id").map(|i| i.to_string()).unwrap_or_default();
-                                    let t_title = t.get("title").and_then(|x| x.as_str()).unwrap_or("Unknown").to_string();
-                                    let t_artist = t.get("user").and_then(|u| u.get("username")).and_then(|u| u.as_str()).unwrap_or(&author).to_string();
-                                    let t_url = t.get("permalink_url").and_then(|u| u.as_str()).unwrap_or("").to_string();
-                                    let t_duration = t.get("duration").and_then(|d| d.as_f64()).map(|ms| ms / 1000.0).unwrap_or(0.0);
+                                    let t_title = t.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                                    if !t_id.is_empty() {
+                                        if t_title.is_empty() || t_title == "Unknown" {
+                                            stub_ids.push(t_id.clone());
+                                        }
+                                        let t_artist = t.get("user").and_then(|u| u.get("username")).and_then(|u| u.as_str()).unwrap_or(&author).to_string();
+                                        let t_url = t.get("permalink_url").and_then(|u| u.as_str()).unwrap_or("").to_string();
+                                        let t_duration = t.get("duration").and_then(|d| d.as_f64()).map(|ms| ms / 1000.0).unwrap_or(0.0);
+                                        let t_artwork = t.get("artwork_url").and_then(|a| a.as_str()).map(|s| s.to_string());
+                                        let t_waveform = t.get("waveform_url").and_then(|w| w.as_str()).map(|s| s.to_string());
+                                        let t_u_permalink = t.get("user").and_then(|u| u.get("permalink")).and_then(|p| p.as_str()).map(|s| s.to_string());
+                                        let t_u_id = t.get("user").and_then(|u| u.get("id")).map(|i| i.to_string());
 
-                                    let t_artwork = t.get("artwork_url").and_then(|a| a.as_str()).map(|s| s.to_string());
-
-                                    if !t_id.is_empty() && !t_title.is_empty() {
                                         playlist_tracks.push(TrackItem {
                                             id: t_id,
-                                            title: t_title,
+                                            title: if t_title.is_empty() { "Loading...".to_string() } else { t_title },
                                             artist: t_artist,
                                             duration: t_duration,
                                             url: if t_url.is_empty() { format!("https://soundcloud.com/tracks/{}", playlist_tracks.len()) } else { t_url },
                                             stream_url: None,
                                             artwork_url: t_artwork,
+                                            waveform_url: t_waveform,
+                                            user_permalink: t_u_permalink,
+                                            user_id: t_u_id,
                                         });
+                                    }
+                                }
+
+                                // Hydrate track stubs in chunks of 50
+                                for chunk in stub_ids.chunks(50) {
+                                    let ids_param = chunk.join(",");
+                                    let bulk_url = format!("https://api-v2.soundcloud.com/tracks?ids={}&client_id={}", ids_param, cid);
+                                    let b_out = Command::new("curl")
+                                        .arg("-s")
+                                        .arg("-m")
+                                        .arg("6")
+                                        .arg("-H")
+                                        .arg("User-Agent: Mozilla/5.0")
+                                        .arg(&bulk_url)
+                                        .output();
+                                    if let Ok(res) = b_out {
+                                        if res.status.success() {
+                                            if let Ok(full_tracks) = serde_json::from_slice::<Vec<serde_json::Value>>(&res.stdout) {
+                                                for ft in full_tracks {
+                                                    let fid = ft.get("id").map(|i| i.to_string()).unwrap_or_default();
+                                                    if let Some(target) = playlist_tracks.iter_mut().find(|pt| pt.id == fid) {
+                                                        if let Some(ftitle) = ft.get("title").and_then(|x| x.as_str()) {
+                                                            target.title = ftitle.to_string();
+                                                        }
+                                                        if let Some(fuser) = ft.get("user").and_then(|u| u.get("username")).and_then(|u| u.as_str()) {
+                                                            target.artist = fuser.to_string();
+                                                        }
+                                                        if let Some(furl) = ft.get("permalink_url").and_then(|u| u.as_str()) {
+                                                            target.url = furl.to_string();
+                                                        }
+                                                        if let Some(fdur) = ft.get("duration").and_then(|d| d.as_f64()) {
+                                                            target.duration = fdur / 1000.0;
+                                                        }
+                                                        target.artwork_url = ft.get("artwork_url").and_then(|a| a.as_str()).map(|s| s.to_string());
+                                                        target.waveform_url = ft.get("waveform_url").and_then(|w| w.as_str()).map(|s| s.to_string());
+                                                        target.user_permalink = ft.get("user").and_then(|u| u.get("permalink")).and_then(|p| p.as_str()).map(|s| s.to_string());
+                                                        target.user_id = ft.get("user").and_then(|u| u.get("id")).map(|i| i.to_string());
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -294,6 +385,9 @@ impl SearchEngine {
                             let url = v.get("permalink_url").and_then(|u| u.as_str()).unwrap_or(&full_url).to_string();
                             let duration = v.get("duration").and_then(|d| d.as_f64()).map(|ms| ms / 1000.0).unwrap_or(0.0);
                             let artwork_url = v.get("artwork_url").and_then(|a| a.as_str()).map(|s| s.to_string());
+                            let waveform_url = v.get("waveform_url").and_then(|w| w.as_str()).map(|s| s.to_string());
+                            let user_permalink = v.get("user").and_then(|u| u.get("permalink")).and_then(|p| p.as_str()).map(|s| s.to_string());
+                            let user_id = v.get("user").and_then(|u| u.get("id")).map(|i| i.to_string());
 
                             return SearchResult::Success(vec![TrackItem {
                                 id,
@@ -303,6 +397,9 @@ impl SearchEngine {
                                 url,
                                 stream_url: None,
                                 artwork_url,
+                                waveform_url,
+                                user_permalink,
+                                user_id,
                             }]);
                         }
                     }
@@ -340,9 +437,11 @@ impl SearchEngine {
                                     .unwrap_or("Unknown")
                                     .to_string();
                                 let artist = item
-                                    .get("user")
-                                    .and_then(|u| u.get("username"))
-                                    .and_then(|u| u.as_str())
+                                    .get("publisher_metadata")
+                                    .and_then(|pm| pm.get("artist"))
+                                    .and_then(|a| a.as_str())
+                                    .filter(|s| !s.trim().is_empty())
+                                    .or_else(|| item.get("user").and_then(|u| u.get("username")).and_then(|u| u.as_str()))
                                     .unwrap_or("SoundCloud")
                                     .to_string();
                                 let url = item
@@ -359,6 +458,19 @@ impl SearchEngine {
                                     .get("artwork_url")
                                     .and_then(|a| a.as_str())
                                     .map(|s| s.to_string());
+                                let waveform_url = item
+                                    .get("waveform_url")
+                                    .and_then(|w| w.as_str())
+                                    .map(|s| s.to_string());
+                                let user_permalink = item
+                                    .get("user")
+                                    .and_then(|u| u.get("permalink"))
+                                    .and_then(|p| p.as_str())
+                                    .map(|s| s.to_string());
+                                let user_id = item
+                                    .get("user")
+                                    .and_then(|u| u.get("id"))
+                                    .map(|i| i.to_string());
 
                                 let transcoding_url = item
                                     .get("media")
@@ -378,6 +490,9 @@ impl SearchEngine {
                                         url,
                                         stream_url: transcoding_url,
                                         artwork_url,
+                                        waveform_url,
+                                        user_permalink,
+                                        user_id,
                                     });
                                 }
                             }
@@ -447,6 +562,9 @@ impl SearchEngine {
                                 url,
                                 stream_url: None,
                                 artwork_url: None,
+                                waveform_url: None,
+                                user_permalink: None,
+                                user_id: None,
                             });
                         }
                     }
@@ -459,5 +577,104 @@ impl SearchEngine {
         } else {
             SearchResult::Success(tracks)
         }
+    }
+
+    fn execute_fetch_user(user_query: &str, cached_cid: &Arc<Mutex<Option<String>>>) -> SearchResult {
+        let cid = {
+            let guard = cached_cid.lock().unwrap();
+            guard.clone().unwrap_or_else(|| "tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ".to_string())
+        };
+
+        // If user_query is a permalink or URL or user ID
+        let resolve_url = if user_query.starts_with("http") {
+            format!("https://api-v2.soundcloud.com/resolve?url={}&client_id={}", user_query, cid)
+        } else if user_query.chars().all(|c| c.is_ascii_digit()) {
+            format!("https://api-v2.soundcloud.com/users/{}?client_id={}", user_query, cid)
+        } else {
+            format!("https://api-v2.soundcloud.com/resolve?url=https://soundcloud.com/{}&client_id={}", user_query, cid)
+        };
+
+        let output = Command::new("curl")
+            .arg("-s")
+            .arg("-m")
+            .arg("6")
+            .arg("-H")
+            .arg("User-Agent: Mozilla/5.0")
+            .arg(&resolve_url)
+            .output();
+
+        if let Ok(out) = output {
+            if out.status.success() {
+                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                    let user_id = v.get("id").map(|i| i.to_string()).unwrap_or_default();
+                    let username = v.get("username").and_then(|u| u.as_str()).unwrap_or("Unknown").to_string();
+                    let permalink = v.get("permalink").and_then(|p| p.as_str()).unwrap_or("").to_string();
+                    let avatar_url = v.get("avatar_url").and_then(|a| a.as_str()).map(|s| s.to_string());
+                    let description = v.get("description").and_then(|d| d.as_str()).map(|s| s.to_string());
+                    let followers_count = v.get("followers_count").and_then(|f| f.as_u64()).unwrap_or(0);
+                    let track_count = v.get("track_count").and_then(|t| t.as_u64()).unwrap_or(0) as usize;
+
+                    if !user_id.is_empty() {
+                        // Fetch user's tracks
+                        let tracks_url = format!("https://api-v2.soundcloud.com/users/{}/tracks?client_id={}&limit=30", user_id, cid);
+                        let tracks_out = Command::new("curl")
+                            .arg("-s")
+                            .arg("-m")
+                            .arg("6")
+                            .arg("-H")
+                            .arg("User-Agent: Mozilla/5.0")
+                            .arg(&tracks_url)
+                            .output();
+
+                        let mut user_tracks = Vec::new();
+                        if let Ok(t_out) = tracks_out {
+                            if t_out.status.success() {
+                                if let Ok(tv) = serde_json::from_slice::<serde_json::Value>(&t_out.stdout) {
+                                    if let Some(coll) = tv.get("collection").and_then(|c| c.as_array()) {
+                                        for t in coll {
+                                            let tid = t.get("id").map(|i| i.to_string()).unwrap_or_default();
+                                            let title = t.get("title").and_then(|x| x.as_str()).unwrap_or("Unknown").to_string();
+                                            let artist = t.get("user").and_then(|u| u.get("username")).and_then(|u| u.as_str()).unwrap_or(&username).to_string();
+                                            let url = t.get("permalink_url").and_then(|u| u.as_str()).unwrap_or("").to_string();
+                                            let duration = t.get("duration").and_then(|d| d.as_f64()).map(|ms| ms / 1000.0).unwrap_or(0.0);
+                                            let artwork = t.get("artwork_url").and_then(|a| a.as_str()).map(|s| s.to_string());
+                                            let waveform = t.get("waveform_url").and_then(|w| w.as_str()).map(|s| s.to_string());
+
+                                            if !tid.is_empty() && !title.is_empty() {
+                                                user_tracks.push(TrackItem {
+                                                    id: tid,
+                                                    title,
+                                                    artist,
+                                                    duration,
+                                                    url,
+                                                    stream_url: None,
+                                                    artwork_url: artwork,
+                                                    waveform_url: waveform,
+                                                    user_permalink: Some(permalink.clone()),
+                                                    user_id: Some(user_id.clone()),
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        return SearchResult::UserProfileLoaded(UserProfile {
+                            id: user_id,
+                            username,
+                            permalink,
+                            avatar_url,
+                            description,
+                            followers_count,
+                            track_count: if user_tracks.is_empty() { track_count } else { user_tracks.len() },
+                            tracks: user_tracks,
+                        });
+                    }
+                }
+            }
+        }
+
+        SearchResult::Error(format!("Could not load user profile for '{}'", user_query))
     }
 }

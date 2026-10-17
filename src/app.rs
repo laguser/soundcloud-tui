@@ -6,6 +6,23 @@ use ratatui::style::Color;
 use std::time::Instant;
 
 #[derive(PartialEq, Clone, Copy, Debug)]
+pub enum RepeatMode {
+    Off,
+    All,
+    One,
+}
+
+impl RepeatMode {
+    pub fn name(&self) -> &'static str {
+        match self {
+            RepeatMode::Off => "off",
+            RepeatMode::All => "all",
+            RepeatMode::One => "one",
+        }
+    }
+}
+
+#[derive(PartialEq, Clone, Copy, Debug)]
 pub enum ViewMode {
     Search,
     Queue,
@@ -13,6 +30,7 @@ pub enum ViewMode {
     PlaylistDetail,
     Favorites,
     History,
+    UserProfile,
     Settings,
 }
 
@@ -25,6 +43,7 @@ impl ViewMode {
             ViewMode::PlaylistDetail => "playlist",
             ViewMode::Favorites => "favorites",
             ViewMode::History => "history",
+            ViewMode::UserProfile => "profile",
             ViewMode::Settings => "settings",
         }
     }
@@ -53,7 +72,16 @@ pub struct App {
     pub favorites_cursor: usize,
     pub settings_cursor: usize,
 
-    // Audio status
+    // User Profile view
+    pub current_user_profile: Option<crate::search::UserProfile>,
+    pub user_profile_cursor: usize,
+
+    // Modal dialogs: Creating playlist or adding track to playlist
+    pub modal_input: Option<Vec<char>>,
+    pub modal_target_track: Option<TrackItem>,
+    pub modal_playlist_cursor: usize,
+
+    // Audio status & playback modes
     pub player: AudioPlayer,
     pub search_engine: SearchEngine,
     pub discord: crate::discord::DiscordRpc,
@@ -63,6 +91,14 @@ pub struct App {
     pub current_pos: f64,
     pub total_duration: f64,
     pub volume: u32,
+    pub shuffle: bool,
+    pub repeat: RepeatMode,
+    pub prefetched_track_id: Option<String>,
+
+    // Dynamic waveform samples
+    pub current_waveform: Vec<u8>,
+    pub loaded_waveform_track_id: Option<String>,
+
     pub status_message: Option<(String, Instant)>,
     pub last_esc_press: Option<Instant>,
     pub last_rpc_update: Option<Instant>,
@@ -98,6 +134,13 @@ impl App {
             favorites_cursor: 0,
             settings_cursor: 0,
 
+            current_user_profile: None,
+            user_profile_cursor: 0,
+
+            modal_input: None,
+            modal_target_track: None,
+            modal_playlist_cursor: 0,
+
             player,
             search_engine: SearchEngine::new(store.config.client_id.clone()),
             discord,
@@ -107,6 +150,11 @@ impl App {
             current_pos: 0.0,
             total_duration: 0.0,
             volume,
+            shuffle: false,
+            repeat: RepeatMode::Off,
+            prefetched_track_id: None,
+            current_waveform: Vec::new(),
+            loaded_waveform_track_id: None,
             status_message: Some(("Ready. Type to search SoundCloud".to_string(), Instant::now())),
             last_esc_press: None,
             last_rpc_update: None,
@@ -159,21 +207,88 @@ impl App {
         if let Some(pos) = self.queue.iter().position(|t| t.url == track.url) {
             self.current_track_idx = Some(pos);
         } else {
-            self.queue.push(track);
+            self.queue.push(track.clone());
             self.current_track_idx = Some(self.queue.len() - 1);
         }
         self.is_paused = false;
         self.current_pos = 0.0;
         self.total_duration = 0.0;
+        self.prefetched_track_id = None;
+
+        // Fetch waveform if available
+        self.fetch_waveform_for_track(&track);
+    }
+
+    fn fetch_waveform_for_track(&mut self, track: &TrackItem) {
+        if self.loaded_waveform_track_id.as_deref() == Some(&track.id) {
+            return;
+        }
+        self.loaded_waveform_track_id = Some(track.id.clone());
+        self.current_waveform.clear();
+
+        if let Some(wf_url) = &track.waveform_url {
+            let url_clone = wf_url.clone();
+            let track_id_clone = track.id.clone();
+            std::thread::spawn(move || {
+                let out = std::process::Command::new("curl")
+                    .arg("-s")
+                    .arg("-m")
+                    .arg("4")
+                    .arg("-H")
+                    .arg("User-Agent: Mozilla/5.0")
+                    .arg(&url_clone)
+                    .output();
+                if let Ok(res) = out {
+                    if res.status.success() {
+                        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&res.stdout) {
+                            if let Some(samples) = v.get("samples").and_then(|s| s.as_array()) {
+                                let bytes: Vec<u8> = samples.iter().filter_map(|n| n.as_u64().map(|u| (u.min(100)) as u8)).collect();
+                                let path = crate::storage::DataStore::cache_dir().join(format!("{}.wave", track_id_clone));
+                                let _ = std::fs::write(path, bytes);
+                            }
+                        }
+                    }
+                }
+            });
+        }
     }
 
     pub fn play_next(&mut self) {
         if self.queue.is_empty() {
             return;
         }
+
+        if self.repeat == RepeatMode::One {
+            if let Some(idx) = self.current_track_idx {
+                if let Some(track) = self.queue.get(idx).cloned() {
+                    self.play_track(track);
+                    return;
+                }
+            }
+        }
+
+        if self.shuffle && self.queue.len() > 1 {
+            use rand::Rng;
+            let mut rng = rand::thread_rng();
+            let mut next_idx = rng.gen_range(0..self.queue.len());
+            if Some(next_idx) == self.current_track_idx {
+                next_idx = (next_idx + 1) % self.queue.len();
+            }
+            let track = self.queue[next_idx].clone();
+            self.current_track_idx = Some(next_idx);
+            self.play_track(track);
+            return;
+        }
+
         let next_idx = match self.current_track_idx {
             Some(i) if i + 1 < self.queue.len() => i + 1,
-            _ => 0,
+            _ => {
+                if self.repeat == RepeatMode::All || self.repeat == RepeatMode::Off {
+                    0
+                } else {
+                    return;
+                }
+            }
         };
         let track = self.queue[next_idx].clone();
         self.current_track_idx = Some(next_idx);
@@ -234,6 +349,65 @@ impl App {
             }
         }
 
+        // If modal input is active (creating a playlist)
+        if let Some(chars) = &mut self.modal_input {
+            match key.code {
+                KeyCode::Esc => {
+                    self.modal_input = None;
+                    self.modal_target_track = None;
+                }
+                KeyCode::Char(c) => {
+                    chars.push(c);
+                }
+                KeyCode::Backspace => {
+                    chars.pop();
+                }
+                KeyCode::Enter => {
+                    let title: String = chars.iter().collect();
+                    if !title.trim().is_empty() {
+                        self.store.create_playlist(title.trim());
+                        self.set_status(&format!("Created playlist: {}", title.trim()));
+                    }
+                    self.modal_input = None;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Modal for selecting a playlist to add a track
+        if self.modal_target_track.is_some() {
+            match key.code {
+                KeyCode::Esc => {
+                    self.modal_target_track = None;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if self.modal_playlist_cursor > 0 {
+                        self.modal_playlist_cursor -= 1;
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if !self.store.playlists.is_empty() && self.modal_playlist_cursor + 1 < self.store.playlists.len() {
+                        self.modal_playlist_cursor += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some(track) = self.modal_target_track.take() {
+                        if !self.store.playlists.is_empty() && self.modal_playlist_cursor < self.store.playlists.len() {
+                            let pl_title = self.store.playlists[self.modal_playlist_cursor].title.clone();
+                            if self.store.add_track_to_playlist(self.modal_playlist_cursor, track) {
+                                self.set_status(&format!("Added to '{}'", pl_title));
+                            } else {
+                                self.set_status(&format!("Track already in '{}'", pl_title));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // Functional view switches: F1-F6
         match key.code {
             KeyCode::F(1) => {
@@ -275,6 +449,7 @@ impl App {
                     ViewMode::PlaylistDetail => ViewMode::Playlists,
                     ViewMode::Favorites => ViewMode::History,
                     ViewMode::History => ViewMode::Settings,
+                    ViewMode::UserProfile => ViewMode::Search,
                     ViewMode::Settings => ViewMode::Search,
                 };
                 if self.view_mode != ViewMode::Search {
@@ -336,6 +511,63 @@ impl App {
             KeyCode::Char('p') => {
                 self.play_prev();
             }
+            KeyCode::Char('s') => {
+                self.shuffle = !self.shuffle;
+                self.set_status(&format!("Shuffle: {}", if self.shuffle { "ON" } else { "OFF" }));
+            }
+            KeyCode::Char('r') => {
+                self.repeat = match self.repeat {
+                    RepeatMode::Off => RepeatMode::All,
+                    RepeatMode::All => RepeatMode::One,
+                    RepeatMode::One => RepeatMode::Off,
+                };
+                self.set_status(&format!("Repeat: {}", self.repeat.name().to_uppercase()));
+            }
+            KeyCode::Char('u') => {
+                // View profile of artist for current/highlighted track
+                let track = match self.view_mode {
+                    ViewMode::Search => self.search_results.get(self.search_cursor).cloned(),
+                    ViewMode::Queue => self.queue.get(self.queue_cursor).cloned(),
+                    ViewMode::Favorites => self.store.liked.get(self.favorites_cursor).cloned(),
+                    ViewMode::History => self.store.history.get(self.history_cursor).map(|h| h.track.clone()),
+                    ViewMode::PlaylistDetail => {
+                        self.selected_playlist_idx.and_then(|i| self.store.playlists.get(i)).and_then(|p| p.tracks.get(self.playlist_detail_cursor).cloned())
+                    }
+                    _ => self.current_track().cloned(),
+                };
+                if let Some(t) = track {
+                    let query = t.user_permalink.as_deref().or(t.user_id.as_deref()).unwrap_or(&t.artist);
+                    self.set_status(&format!("Loading profile of '{}'...", t.artist));
+                    self.search_engine.fetch_user(query);
+                }
+            }
+            KeyCode::Char('c') => {
+                // Create local playlist dialog
+                if self.view_mode == ViewMode::Playlists {
+                    self.modal_input = Some(Vec::new());
+                }
+            }
+            KeyCode::Char('m') => {
+                // Add highlighted track to one of saved playlists
+                let track = match self.view_mode {
+                    ViewMode::Search => self.search_results.get(self.search_cursor).cloned(),
+                    ViewMode::Queue => self.queue.get(self.queue_cursor).cloned(),
+                    ViewMode::Favorites => self.store.liked.get(self.favorites_cursor).cloned(),
+                    ViewMode::History => self.store.history.get(self.history_cursor).map(|h| h.track.clone()),
+                    ViewMode::UserProfile => {
+                        self.current_user_profile.as_ref().and_then(|p| p.tracks.get(self.user_profile_cursor).cloned())
+                    }
+                    _ => self.current_track().cloned(),
+                };
+                if let Some(t) = track {
+                    if self.store.playlists.is_empty() {
+                        self.set_status("No playlists yet. Press 'c' in Playlists view to create one");
+                    } else {
+                        self.modal_target_track = Some(t);
+                        self.modal_playlist_cursor = 0;
+                    }
+                }
+            }
             KeyCode::Char('l') => {
                 // Like / unlike current track
                 if let Some(track) = self.current_track().cloned() {
@@ -373,6 +605,11 @@ impl App {
                 ViewMode::PlaylistDetail => {
                     if self.playlist_detail_cursor > 0 {
                         self.playlist_detail_cursor -= 1;
+                    }
+                }
+                ViewMode::UserProfile => {
+                    if self.user_profile_cursor > 0 {
+                        self.user_profile_cursor -= 1;
                     }
                 }
                 ViewMode::Favorites => {
@@ -417,6 +654,13 @@ impl App {
                             if !pl.tracks.is_empty() && self.playlist_detail_cursor + 1 < pl.tracks.len() {
                                 self.playlist_detail_cursor += 1;
                             }
+                        }
+                    }
+                }
+                ViewMode::UserProfile => {
+                    if let Some(p) = &self.current_user_profile {
+                        if !p.tracks.is_empty() && self.user_profile_cursor + 1 < p.tracks.len() {
+                            self.user_profile_cursor += 1;
                         }
                     }
                 }
@@ -467,6 +711,13 @@ impl App {
                         }
                     }
                 }
+                ViewMode::UserProfile => {
+                    if let Some(p) = &self.current_user_profile {
+                        if let Some(track) = p.tracks.get(self.user_profile_cursor).cloned() {
+                            self.play_track(track);
+                        }
+                    }
+                }
                 ViewMode::Favorites => {
                     if let Some(track) = self.store.liked.get(self.favorites_cursor).cloned() {
                         self.play_track(track);
@@ -488,6 +739,9 @@ impl App {
                     ViewMode::Favorites => self.store.liked.get(self.favorites_cursor).cloned(),
                     ViewMode::History => {
                         self.store.history.get(self.history_cursor).map(|h| h.track.clone())
+                    }
+                    ViewMode::UserProfile => {
+                        self.current_user_profile.as_ref().and_then(|p| p.tracks.get(self.user_profile_cursor).cloned())
                     }
                     ViewMode::PlaylistDetail => {
                         if let Some(idx) = self.selected_playlist_idx {
@@ -519,11 +773,21 @@ impl App {
                         self.favorites_cursor -= 1;
                     }
                 } else if self.view_mode == ViewMode::Playlists && !self.store.playlists.is_empty() {
-                    let removed = self.store.playlists.remove(self.playlists_cursor);
-                    self.store.save();
-                    self.set_status(&format!("Removed Playlist: {}", removed.title));
-                    if self.playlists_cursor >= self.store.playlists.len() && self.playlists_cursor > 0 {
-                        self.playlists_cursor -= 1;
+                    if let Some(removed) = self.store.remove_playlist(self.playlists_cursor) {
+                        self.set_status(&format!("Removed Playlist: {}", removed.title));
+                        if self.playlists_cursor >= self.store.playlists.len() && self.playlists_cursor > 0 {
+                            self.playlists_cursor -= 1;
+                        }
+                    }
+                } else if self.view_mode == ViewMode::PlaylistDetail {
+                    if let Some(pl_idx) = self.selected_playlist_idx {
+                        if let Some(removed) = self.store.remove_track_from_playlist(pl_idx, self.playlist_detail_cursor) {
+                            self.set_status(&format!("Removed track: {}", removed.title));
+                            let track_count = self.store.playlists.get(pl_idx).map(|p| p.tracks.len()).unwrap_or(0);
+                            if self.playlist_detail_cursor >= track_count && self.playlist_detail_cursor > 0 {
+                                self.playlist_detail_cursor -= 1;
+                            }
+                        }
                     }
                 }
             }
@@ -593,6 +857,33 @@ impl App {
             }
         }
 
+        // Gapless background prefetch: when current track reaches 70% duration, prefetch next track into disk cache
+        if self.total_duration > 15.0 && (self.current_pos / self.total_duration) >= 0.70 {
+            if let Some(cur_idx) = self.current_track_idx {
+                if !self.queue.is_empty() {
+                    let next_idx = (cur_idx + 1) % self.queue.len();
+                    if let Some(next_track) = self.queue.get(next_idx) {
+                        if self.prefetched_track_id.as_deref() != Some(&next_track.id) {
+                            self.prefetched_track_id = Some(next_track.id.clone());
+                            SearchEngine::prefetch_track(next_track, &self.search_engine.cached_client_id);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Load waveform bytes from disk if available and not yet loaded into RAM
+        if let Some(track) = self.current_track() {
+            if self.current_waveform.is_empty() {
+                let wf_file = crate::storage::DataStore::cache_dir().join(format!("{}.wave", track.id));
+                if wf_file.exists() {
+                    if let Ok(bytes) = std::fs::read(wf_file) {
+                        self.current_waveform = bytes;
+                    }
+                }
+            }
+        }
+
         // Discord Rich Presence update (every 1s)
         if self.store.config.discord_rpc {
             let should_update = match self.last_rpc_update {
@@ -632,6 +923,12 @@ impl App {
                     self.selected_playlist_idx = Some(0);
                     self.playlist_detail_cursor = 0;
                     self.view_mode = ViewMode::PlaylistDetail;
+                }
+                SearchResult::UserProfileLoaded(profile) => {
+                    self.set_status(&format!("Loaded profile: @{} ({} tracks)", profile.username, profile.track_count));
+                    self.current_user_profile = Some(profile);
+                    self.user_profile_cursor = 0;
+                    self.view_mode = ViewMode::UserProfile;
                 }
                 SearchResult::Error(err) => {
                     self.set_status(&format!("Error: {}", err));

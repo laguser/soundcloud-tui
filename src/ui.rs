@@ -36,11 +36,19 @@ pub fn render(f: &mut Frame, app: &App) {
         ViewMode::PlaylistDetail => render_playlist_detail_view(f, app, chunks[2]),
         ViewMode::Favorites => render_favorites_view(f, app, chunks[2]),
         ViewMode::History => render_history_view(f, app, chunks[2]),
+        ViewMode::UserProfile => render_user_profile_view(f, app, chunks[2]),
         ViewMode::Settings => render_settings_view(f, app, chunks[2]),
     }
 
     render_player_tape(f, app, chunks[4]);
     render_bottom_bar(f, app, chunks[5]);
+
+    // Modal overlays (Creating playlist or adding to playlist)
+    if let Some(chars) = &app.modal_input {
+        render_input_modal(f, app, chars, "New Playlist Name:");
+    } else if let Some(target_track) = &app.modal_target_track {
+        render_add_to_playlist_modal(f, app, target_track);
+    }
 }
 
 fn format_duration(seconds: f64) -> String {
@@ -53,13 +61,25 @@ fn format_duration(seconds: f64) -> String {
 fn render_top_bar(f: &mut Frame, app: &App, area: Rect) {
     let accent = app.theme_accent();
     let current_view = app.view_mode.name();
-
     let mut spans = vec![
         Span::styled("◈ ", Style::default().fg(accent)),
         Span::styled(current_view, Style::default().fg(accent).add_modifier(Modifier::BOLD)),
         Span::styled("  •  ", Style::default().fg(Color::Rgb(50, 50, 50))),
         Span::styled(format!("{}%", app.volume), Style::default().fg(Color::Rgb(140, 140, 140))),
     ];
+
+    if app.shuffle {
+        spans.push(Span::styled("  •  ", Style::default().fg(Color::Rgb(50, 50, 50))));
+        spans.push(Span::styled("SHUF", Style::default().fg(accent).add_modifier(Modifier::BOLD)));
+    }
+
+    if app.repeat != crate::app::RepeatMode::Off {
+        spans.push(Span::styled("  •  ", Style::default().fg(Color::Rgb(50, 50, 50))));
+        spans.push(Span::styled(
+            format!("REP:{}", app.repeat.name().to_uppercase()),
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        ));
+    }
 
     if let Some((msg, _)) = &app.status_message {
         spans.push(Span::styled("  •  ", Style::default().fg(Color::Rgb(50, 50, 50))));
@@ -433,51 +453,80 @@ fn render_player_tape(f: &mut Frame, app: &App, area: Rect) {
         ("0:00".to_string(), "0:00".to_string(), 0.0)
     };
 
-    // Tape conveyor width
+    // Dynamic waveform tape rendering
     let bar_width = width.saturating_sub(24).clamp(12, 70);
     let filled_len = (bar_width as f64 * progress_ratio) as usize;
 
-    let bar_str: String = match app.store.config.visual {
-        VisualStyle::Tape => {
-            let mut s = String::new();
-            for i in 0..bar_width {
-                if i < filled_len {
-                    s.push('━');
-                } else if i == filled_len {
-                    s.push('●');
-                } else {
-                    s.push('─');
-                }
-            }
-            s
+    let waveform_blocks = [' ', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+    let mut tape_spans = Vec::new();
+    tape_spans.push(Span::styled(format!("{:>5} ", cur_str), Style::default().fg(Color::Rgb(90, 90, 90))));
+
+    if !app.current_waveform.is_empty() {
+        // Render genuine SoundCloud waveform samples
+        let total_samples = app.current_waveform.len();
+        for i in 0..bar_width {
+            let sample_idx = (i * total_samples) / bar_width;
+            let val = app.current_waveform.get(sample_idx).copied().unwrap_or(0) as usize;
+            let glyph_idx = (val * (waveform_blocks.len() - 1)) / 100;
+            let glyph = waveform_blocks[glyph_idx.min(waveform_blocks.len() - 1)];
+
+            let style = if i < filled_len {
+                Style::default().fg(accent).add_modifier(Modifier::BOLD)
+            } else if i == filled_len {
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Rgb(55, 55, 55))
+            };
+            tape_spans.push(Span::styled(glyph.to_string(), style));
         }
-        VisualStyle::Blocky => {
-            let mut s = String::new();
-            for i in 0..bar_width {
-                if i < filled_len {
-                    s.push('█');
-                } else if i == filled_len {
-                    s.push('▓');
-                } else {
-                    s.push('░');
+    } else {
+        // Fallback to chosen visual style
+        let bar_str: String = match app.store.config.visual {
+            VisualStyle::Tape => {
+                let mut s = String::new();
+                for i in 0..bar_width {
+                    if i < filled_len {
+                        s.push('━');
+                    } else if i == filled_len {
+                        s.push('●');
+                    } else {
+                        s.push('─');
+                    }
                 }
+                s
             }
-            s
-        }
-        VisualStyle::Minimal => {
-            let mut s = String::new();
-            for i in 0..bar_width {
-                if i < filled_len {
-                    s.push('·');
-                } else if i == filled_len {
-                    s.push('◆');
-                } else {
-                    s.push(' ');
+            VisualStyle::Blocky => {
+                let mut s = String::new();
+                for i in 0..bar_width {
+                    if i < filled_len {
+                        s.push('█');
+                    } else if i == filled_len {
+                        s.push('▓');
+                    } else {
+                        s.push('░');
+                    }
                 }
+                s
             }
-            s
-        }
-    };
+            VisualStyle::Minimal => {
+                let mut s = String::new();
+                for i in 0..bar_width {
+                    if i < filled_len {
+                        s.push('·');
+                    } else if i == filled_len {
+                        s.push('◆');
+                    } else {
+                        s.push(' ');
+                    }
+                }
+                s
+            }
+        };
+        tape_spans.push(Span::styled(bar_str, Style::default().fg(accent)));
+    }
+
+    tape_spans.push(Span::styled(format!(" {:<5}", tot_str), Style::default().fg(Color::Rgb(90, 90, 90))));
 
     let line1 = Line::from(vec![
         Span::styled(format!("{} ", state_icon), Style::default().fg(accent)),
@@ -487,14 +536,133 @@ fn render_player_tape(f: &mut Frame, app: &App, area: Rect) {
         ),
     ]);
 
-    let line2 = Line::from(vec![
-        Span::styled(format!("{:>5} ", cur_str), Style::default().fg(Color::Rgb(90, 90, 90))),
-        Span::styled(bar_str, Style::default().fg(accent)),
-        Span::styled(format!(" {:<5}", tot_str), Style::default().fg(Color::Rgb(90, 90, 90))),
-    ]);
+    let line2 = Line::from(tape_spans);
 
     let p = Paragraph::new(vec![line1, line2]).alignment(Alignment::Center);
     f.render_widget(p, area);
+}
+
+fn render_user_profile_view(f: &mut Frame, app: &App, area: Rect) {
+    let accent = app.theme_accent();
+    let profile = match &app.current_user_profile {
+        Some(p) => p,
+        None => {
+            let empty = Paragraph::new("No profile loaded. Press 'u' on any track to view author").alignment(Alignment::Center);
+            f.render_widget(empty, area);
+            return;
+        }
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Header
+            Constraint::Length(1), // Blank
+            Constraint::Fill(1),   // Tracks
+        ])
+        .split(area);
+
+    let desc = profile.description.as_deref().unwrap_or("SoundCloud Artist");
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled("@", Style::default().fg(accent).add_modifier(Modifier::BOLD)),
+        Span::styled(&profile.username, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("  •  {} followers  •  {} tracks", profile.followers_count, profile.track_count), Style::default().fg(Color::Rgb(100, 100, 100))),
+        Span::styled(format!("  •  {}", truncate_str(desc, 30)), Style::default().fg(Color::Rgb(70, 70, 70))),
+        Span::styled("  (esc to back)", Style::default().fg(Color::Rgb(50, 50, 50))),
+    ]));
+    f.render_widget(header, chunks[0]);
+
+    render_tracks_list(f, &profile.tracks, app.user_profile_cursor, accent, chunks[2], app);
+}
+
+fn render_input_modal(f: &mut Frame, app: &App, input_chars: &[char], prompt: &str) {
+    let size = f.area();
+    let accent = app.theme_accent();
+    let text: String = input_chars.iter().collect();
+
+    let area = centered_rect(50, 20, size);
+    f.render_widget(ratatui::widgets::Clear, area);
+
+    let block = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(Style::default().fg(accent))
+        .title(Span::styled(" Create Playlist ", Style::default().fg(accent).add_modifier(Modifier::BOLD)));
+    f.render_widget(block, area);
+
+    let inner = area.inner(ratatui::layout::Margin { horizontal: 2, vertical: 1 });
+    let p = Paragraph::new(vec![
+        Line::from(Span::styled(prompt, Style::default().fg(Color::Rgb(140, 140, 140)))),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("▸ ", Style::default().fg(accent)),
+            Span::styled(&text, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled("▍", Style::default().fg(accent)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("Enter: Confirm  •  Esc: Cancel", Style::default().fg(Color::Rgb(80, 80, 80)))),
+    ]);
+    f.render_widget(p, inner);
+}
+
+fn render_add_to_playlist_modal(f: &mut Frame, app: &App, target_track: &crate::storage::TrackItem) {
+    let size = f.area();
+    let accent = app.theme_accent();
+
+    let area = centered_rect(55, 40, size);
+    f.render_widget(ratatui::widgets::Clear, area);
+
+    let title_str = format!(" Add to Playlist: {} ", truncate_str(&target_track.title, 25));
+    let block = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(Style::default().fg(accent))
+        .title(Span::styled(title_str, Style::default().fg(accent).add_modifier(Modifier::BOLD)));
+    f.render_widget(block, area);
+
+    let inner = area.inner(ratatui::layout::Margin { horizontal: 2, vertical: 1 });
+    let mut lines = Vec::new();
+    lines.push(Line::from(Span::styled("Select target playlist:", Style::default().fg(Color::Rgb(120, 120, 120)))));
+    lines.push(Line::from(""));
+
+    for (idx, pl) in app.store.playlists.iter().enumerate() {
+        let is_sel = idx == app.modal_playlist_cursor;
+        let prefix = if is_sel { " ▸ " } else { "   " };
+        let style = if is_sel {
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Rgb(130, 130, 130))
+        };
+        lines.push(Line::from(vec![
+            Span::styled(prefix, Style::default().fg(if is_sel { accent } else { Color::Rgb(50, 50, 50) })),
+            Span::styled(format!("{:<28}", truncate_str(&pl.title, 26)), style),
+            Span::styled(format!("({} tracks)", pl.track_count), Style::default().fg(Color::Rgb(70, 70, 70))),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Enter: Add  •  Esc: Cancel", Style::default().fg(Color::Rgb(80, 80, 80)))));
+
+    let p = Paragraph::new(lines);
+    f.render_widget(p, inner);
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
 }
 
 fn render_bottom_bar(f: &mut Frame, _app: &App, area: Rect) {
@@ -502,20 +670,23 @@ fn render_bottom_bar(f: &mut Frame, _app: &App, area: Rect) {
         Span::styled("space ", Style::default().fg(Color::Rgb(100, 100, 100))),
         Span::styled("play", Style::default().fg(Color::Rgb(60, 60, 60))),
         Span::styled("  •  ", Style::default().fg(Color::Rgb(35, 35, 35))),
-        Span::styled("n/p ", Style::default().fg(Color::Rgb(100, 100, 100))),
-        Span::styled("skip", Style::default().fg(Color::Rgb(60, 60, 60))),
+        Span::styled("s ", Style::default().fg(Color::Rgb(100, 100, 100))),
+        Span::styled("shuf", Style::default().fg(Color::Rgb(60, 60, 60))),
         Span::styled("  •  ", Style::default().fg(Color::Rgb(35, 35, 35))),
-        Span::styled("l ", Style::default().fg(Color::Rgb(100, 100, 100))),
-        Span::styled("like", Style::default().fg(Color::Rgb(60, 60, 60))),
+        Span::styled("r ", Style::default().fg(Color::Rgb(100, 100, 100))),
+        Span::styled("repeat", Style::default().fg(Color::Rgb(60, 60, 60))),
         Span::styled("  •  ", Style::default().fg(Color::Rgb(35, 35, 35))),
-        Span::styled("a ", Style::default().fg(Color::Rgb(100, 100, 100))),
-        Span::styled("queue", Style::default().fg(Color::Rgb(60, 60, 60))),
+        Span::styled("u ", Style::default().fg(Color::Rgb(100, 100, 100))),
+        Span::styled("artist", Style::default().fg(Color::Rgb(60, 60, 60))),
+        Span::styled("  •  ", Style::default().fg(Color::Rgb(35, 35, 35))),
+        Span::styled("c ", Style::default().fg(Color::Rgb(100, 100, 100))),
+        Span::styled("new-pl", Style::default().fg(Color::Rgb(60, 60, 60))),
+        Span::styled("  •  ", Style::default().fg(Color::Rgb(35, 35, 35))),
+        Span::styled("m ", Style::default().fg(Color::Rgb(100, 100, 100))),
+        Span::styled("add-pl", Style::default().fg(Color::Rgb(60, 60, 60))),
         Span::styled("  •  ", Style::default().fg(Color::Rgb(35, 35, 35))),
         Span::styled("tab ", Style::default().fg(Color::Rgb(100, 100, 100))),
         Span::styled("views", Style::default().fg(Color::Rgb(60, 60, 60))),
-        Span::styled("  •  ", Style::default().fg(Color::Rgb(35, 35, 35))),
-        Span::styled("esc ", Style::default().fg(Color::Rgb(100, 100, 100))),
-        Span::styled("quit (x2)", Style::default().fg(Color::Rgb(60, 60, 60))),
     ];
     let p = Paragraph::new(Line::from(hints)).alignment(Alignment::Center);
     f.render_widget(p, area);

@@ -58,6 +58,12 @@ pub struct TrackItem {
     pub stream_url: Option<String>,
     #[serde(default)]
     pub artwork_url: Option<String>,
+    #[serde(default)]
+    pub waveform_url: Option<String>,
+    #[serde(default)]
+    pub user_permalink: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -84,6 +90,7 @@ pub struct Config {
     pub discord_rpc: bool,
     pub discord_client_id: Option<String>,
     pub client_id: Option<String>,
+    pub oauth_token: Option<String>,
     pub proxy: Option<String>,
     pub cookies_path: Option<String>,
 }
@@ -97,6 +104,7 @@ impl Default for Config {
             discord_rpc: true,
             discord_client_id: None,
             client_id: None,
+            oauth_token: None,
             proxy: None,
             cookies_path: None,
         }
@@ -202,10 +210,52 @@ impl DataStore {
         self.save();
     }
 
-    pub fn remove_playlist(&mut self, index: usize) {
+    pub fn create_playlist(&mut self, title: &str) -> String {
+        let id = format!("local_{}", Local::now().timestamp_millis());
+        let pl = PlaylistItem {
+            id: id.clone(),
+            title: title.to_string(),
+            author: "Local Library".to_string(),
+            track_count: 0,
+            url: format!("local://{}", id),
+            tracks: Vec::new(),
+        };
+        self.playlists.push(pl);
+        self.save();
+        id
+    }
+
+    pub fn add_track_to_playlist(&mut self, playlist_idx: usize, track: TrackItem) -> bool {
+        if let Some(pl) = self.playlists.get_mut(playlist_idx) {
+            if !pl.tracks.iter().any(|t| t.url == track.url) {
+                pl.tracks.push(track);
+                pl.track_count = pl.tracks.len();
+                self.save();
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn remove_track_from_playlist(&mut self, playlist_idx: usize, track_idx: usize) -> Option<TrackItem> {
+        if let Some(pl) = self.playlists.get_mut(playlist_idx) {
+            if track_idx < pl.tracks.len() {
+                let removed = pl.tracks.remove(track_idx);
+                pl.track_count = pl.tracks.len();
+                self.save();
+                return Some(removed);
+            }
+        }
+        None
+    }
+
+    pub fn remove_playlist(&mut self, index: usize) -> Option<PlaylistItem> {
         if index < self.playlists.len() {
-            self.playlists.remove(index);
+            let removed = self.playlists.remove(index);
             self.save();
+            Some(removed)
+        } else {
+            None
         }
     }
 }
