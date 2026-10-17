@@ -25,8 +25,9 @@ pub struct DiscordRpc {
 }
 
 impl DiscordRpc {
-    pub fn new() -> Self {
+    pub fn new(custom_client_id: Option<String>) -> Self {
         let (tx, rx) = channel::<RpcCommand>();
+        let client_id = custom_client_id.unwrap_or_else(|| DISCORD_CLIENT_ID.to_string());
 
         thread::spawn(move || {
             let mut stream: Option<UnixStream> = None;
@@ -42,7 +43,7 @@ impl DiscordRpc {
                         is_paused,
                     } => {
                         if stream.is_none() {
-                            stream = Self::connect_ipc();
+                            stream = Self::connect_ipc(&client_id);
                         }
 
                         if let Some(ref mut s) = stream {
@@ -134,7 +135,7 @@ impl DiscordRpc {
         None
     }
 
-    fn connect_ipc() -> Option<UnixStream> {
+    fn connect_ipc(client_id: &str) -> Option<UnixStream> {
         let sock_path = Self::find_socket()?;
         let mut stream = UnixStream::connect(sock_path).ok()?;
         stream.set_write_timeout(Some(Duration::from_millis(200))).ok();
@@ -143,7 +144,7 @@ impl DiscordRpc {
         // Handshake: opcode 0
         let handshake = serde_json::json!({
             "v": 1,
-            "client_id": DISCORD_CLIENT_ID
+            "client_id": client_id
         });
 
         if Self::send_ipc(&mut stream, 0, &handshake).is_ok() {

@@ -74,7 +74,7 @@ impl App {
         let volume = store.config.default_volume;
         let player = AudioPlayer::new();
         player.set_volume(volume as f64);
-        let discord = crate::discord::DiscordRpc::new();
+        let discord = crate::discord::DiscordRpc::new(store.config.discord_client_id.clone());
 
         Self {
             view_mode: ViewMode::Search,
