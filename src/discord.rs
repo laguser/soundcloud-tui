@@ -5,8 +5,8 @@ use std::sync::mpsc::{channel, Sender};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-// Registered Discord client ID for audio presence
-const DISCORD_CLIENT_ID: &str = "383226320970055681";
+// Official SoundCloud Application Client ID in Discord
+const DISCORD_CLIENT_ID: &str = "802958833214423081";
 
 pub enum RpcCommand {
     Update {
