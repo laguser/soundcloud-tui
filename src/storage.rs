@@ -128,12 +128,15 @@ impl DataStore {
             return None;
         }
         let safe_name: String = id.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect();
-        let path = Self::cache_dir().join(format!("{}.mp3", safe_name));
-        if path.exists() && fs::metadata(&path).map(|m| m.len() > 10240).unwrap_or(false) {
-            Some(path)
-        } else {
-            None
+        let m4a_path = Self::cache_dir().join(format!("{}.m4a", safe_name));
+        if m4a_path.exists() && fs::metadata(&m4a_path).map(|m| m.len() > 100 * 1024).unwrap_or(false) {
+            return Some(m4a_path);
         }
+        let mp3_path = Self::cache_dir().join(format!("{}.mp3", safe_name));
+        if mp3_path.exists() && fs::metadata(&mp3_path).map(|m| m.len() > 100 * 1024).unwrap_or(false) {
+            return Some(mp3_path);
+        }
+        None
     }
 
     pub fn load() -> Self {

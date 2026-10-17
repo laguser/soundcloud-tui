@@ -162,24 +162,52 @@ impl SearchEngine {
             return;
         }
         let safe_name: String = track_id.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect();
-        let cache_file = crate::storage::DataStore::cache_dir().join(format!("{}.mp3", safe_name));
-        let tmp_file = cache_file.with_extension("tmp");
+        let cache_dir = crate::storage::DataStore::cache_dir();
 
-        let _ = Command::new("curl")
-            .arg("-s")
-            .arg("-m")
-            .arg("120")
-            .arg("-H")
-            .arg("User-Agent: Mozilla/5.0")
-            .arg(stream_url)
-            .arg("-o")
-            .arg(&tmp_file)
-            .status();
+        // If it is an HLS m3u8 stream, use ffmpeg -c copy into .m4a container for 1:1 lossless instant audio
+        if stream_url.contains(".m3u8") || stream_url.contains("stream/hls") {
+            let m4a_file = cache_dir.join(format!("{}.m4a", safe_name));
+            let tmp_file = cache_dir.join(format!("{}.m4a.tmp", safe_name));
 
-        if tmp_file.exists() && std::fs::metadata(&tmp_file).map(|m| m.len() > 10240).unwrap_or(false) {
-            let _ = std::fs::rename(tmp_file, cache_file);
+            let _ = Command::new("ffmpeg")
+                .arg("-y")
+                .arg("-v")
+                .arg("error")
+                .arg("-headers")
+                .arg("User-Agent: Mozilla/5.0\r\n")
+                .arg("-i")
+                .arg(stream_url)
+                .arg("-c")
+                .arg("copy")
+                .arg(&tmp_file)
+                .status();
+
+            if tmp_file.exists() && std::fs::metadata(&tmp_file).map(|m| m.len() > 100 * 1024).unwrap_or(false) {
+                let _ = std::fs::rename(tmp_file, m4a_file);
+            } else {
+                let _ = std::fs::remove_file(tmp_file);
+            }
         } else {
-            let _ = std::fs::remove_file(tmp_file);
+            // Direct progressive MP3 download via curl
+            let mp3_file = cache_dir.join(format!("{}.mp3", safe_name));
+            let tmp_file = cache_dir.join(format!("{}.mp3.tmp", safe_name));
+
+            let _ = Command::new("curl")
+                .arg("-s")
+                .arg("-m")
+                .arg("180")
+                .arg("-H")
+                .arg("User-Agent: Mozilla/5.0")
+                .arg(stream_url)
+                .arg("-o")
+                .arg(&tmp_file)
+                .status();
+
+            if tmp_file.exists() && std::fs::metadata(&tmp_file).map(|m| m.len() > 100 * 1024).unwrap_or(false) {
+                let _ = std::fs::rename(tmp_file, mp3_file);
+            } else {
+                let _ = std::fs::remove_file(tmp_file);
+            }
         }
     }
 
