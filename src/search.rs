@@ -55,14 +55,38 @@ impl SearchEngine {
             return Some(cached_file.to_string_lossy().to_string());
         }
 
-        if let Some(stream) = &track.stream_url {
-            return Some(stream.clone());
-        }
-
         let cid = {
             let guard = client_id_holder.lock().unwrap();
             guard.clone().unwrap_or_else(|| "tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ".to_string())
         };
+
+        // If stream_url already contains transcoding endpoint, query direct stream URL in 1 jump!
+        if let Some(trans_url) = &track.stream_url {
+            if trans_url.contains("api-v2.soundcloud.com/media") {
+                let stream_lookup = format!("{}?client_id={}", trans_url, cid);
+                let stream_res = Command::new("curl")
+                    .arg("-s")
+                    .arg("-m")
+                    .arg("3")
+                    .arg("-H")
+                    .arg("User-Agent: Mozilla/5.0")
+                    .arg(&stream_lookup)
+                    .output()
+                    .ok();
+
+                if let Some(s_out) = stream_res {
+                    if s_out.status.success() {
+                        if let Ok(sv) = serde_json::from_slice::<serde_json::Value>(&s_out.stdout) {
+                            if let Some(direct_url) = sv.get("url").and_then(|u| u.as_str()) {
+                                return Some(direct_url.to_string());
+                            }
+                        }
+                    }
+                }
+            } else if trans_url.starts_with("http") {
+                return Some(trans_url.clone());
+            }
+        }
 
         // Try direct transcodings lookup via curl
         let api_url = format!(
@@ -209,6 +233,8 @@ impl SearchEngine {
                                     let t_url = t.get("permalink_url").and_then(|u| u.as_str()).unwrap_or("").to_string();
                                     let t_duration = t.get("duration").and_then(|d| d.as_f64()).map(|ms| ms / 1000.0).unwrap_or(0.0);
 
+                                    let t_artwork = t.get("artwork_url").and_then(|a| a.as_str()).map(|s| s.to_string());
+
                                     if !t_id.is_empty() && !t_title.is_empty() {
                                         playlist_tracks.push(TrackItem {
                                             id: t_id,
@@ -217,6 +243,7 @@ impl SearchEngine {
                                             duration: t_duration,
                                             url: if t_url.is_empty() { format!("https://soundcloud.com/tracks/{}", playlist_tracks.len()) } else { t_url },
                                             stream_url: None,
+                                            artwork_url: t_artwork,
                                         });
                                     }
                                 }
@@ -237,6 +264,7 @@ impl SearchEngine {
                             let artist = v.get("user").and_then(|u| u.get("username")).and_then(|u| u.as_str()).unwrap_or("SoundCloud").to_string();
                             let url = v.get("permalink_url").and_then(|u| u.as_str()).unwrap_or(&full_url).to_string();
                             let duration = v.get("duration").and_then(|d| d.as_f64()).map(|ms| ms / 1000.0).unwrap_or(0.0);
+                            let artwork_url = v.get("artwork_url").and_then(|a| a.as_str()).map(|s| s.to_string());
 
                             return SearchResult::Success(vec![TrackItem {
                                 id,
@@ -245,6 +273,7 @@ impl SearchEngine {
                                 duration,
                                 url,
                                 stream_url: None,
+                                artwork_url,
                             }]);
                         }
                     }
@@ -297,6 +326,19 @@ impl SearchEngine {
                                     .and_then(|d| d.as_f64())
                                     .map(|ms| ms / 1000.0)
                                     .unwrap_or(0.0);
+                                let artwork_url = item
+                                    .get("artwork_url")
+                                    .and_then(|a| a.as_str())
+                                    .map(|s| s.to_string());
+
+                                let transcoding_url = item
+                                    .get("media")
+                                    .and_then(|m| m.get("transcodings"))
+                                    .and_then(|t| t.as_array())
+                                    .and_then(|arr| arr.first())
+                                    .and_then(|t| t.get("url"))
+                                    .and_then(|u| u.as_str())
+                                    .map(|s| s.to_string());
 
                                 if !url.is_empty() && !title.is_empty() {
                                     tracks.push(TrackItem {
@@ -305,7 +347,8 @@ impl SearchEngine {
                                         artist,
                                         duration,
                                         url,
-                                        stream_url: None,
+                                        stream_url: transcoding_url,
+                                        artwork_url,
                                     });
                                 }
                             }
@@ -374,6 +417,7 @@ impl SearchEngine {
                                 duration,
                                 url,
                                 stream_url: None,
+                                artwork_url: None,
                             });
                         }
                     }

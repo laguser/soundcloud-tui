@@ -1,5 +1,6 @@
 mod app;
 mod audio;
+mod discord;
 mod search;
 mod storage;
 mod ui;

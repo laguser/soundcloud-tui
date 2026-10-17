@@ -369,9 +369,10 @@ fn render_settings_view(f: &mut Frame, app: &App, size: Rect) {
     lines.push(Line::from(Span::styled("────────────", Style::default().fg(Color::Rgb(40, 40, 40)))));
 
     let items = [
-        ("theme", app.store.config.theme.name()),
-        ("style", app.store.config.visual.name()),
-        ("volume", &format!("{}%", app.store.config.default_volume)),
+        ("theme", app.store.config.theme.name().to_string()),
+        ("style", app.store.config.visual.name().to_string()),
+        ("volume", format!("{}%", app.store.config.default_volume)),
+        ("discord rpc", if app.store.config.discord_rpc { "on".to_string() } else { "off".to_string() }),
     ];
 
     for (idx, (label, val)) in items.iter().enumerate() {
@@ -391,7 +392,7 @@ fn render_settings_view(f: &mut Frame, app: &App, size: Rect) {
         lines.push(Line::from(vec![
             Span::styled(prefix, Style::default().fg(if is_selected { accent } else { Color::Rgb(50, 50, 50) })),
             Span::styled(format!("{:<16}", label), style_label),
-            Span::styled(*val, style_val),
+            Span::styled(val.as_str(), style_val),
         ]));
     }
 

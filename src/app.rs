@@ -56,6 +56,7 @@ pub struct App {
     // Audio status
     pub player: AudioPlayer,
     pub search_engine: SearchEngine,
+    pub discord: crate::discord::DiscordRpc,
     pub store: DataStore,
 
     pub is_paused: bool,
@@ -64,6 +65,7 @@ pub struct App {
     pub volume: u32,
     pub status_message: Option<(String, Instant)>,
     pub last_esc_press: Option<Instant>,
+    pub last_rpc_update: Option<Instant>,
 }
 
 impl App {
@@ -72,6 +74,7 @@ impl App {
         let volume = store.config.default_volume;
         let player = AudioPlayer::new();
         player.set_volume(volume as f64);
+        let discord = crate::discord::DiscordRpc::new();
 
         Self {
             view_mode: ViewMode::Search,
@@ -97,6 +100,7 @@ impl App {
 
             player,
             search_engine: SearchEngine::new(),
+            discord,
             store,
 
             is_paused: false,
@@ -105,6 +109,7 @@ impl App {
             volume,
             status_message: Some(("Ready. Type to search SoundCloud".to_string(), Instant::now())),
             last_esc_press: None,
+            last_rpc_update: None,
         }
     }
 
@@ -430,7 +435,7 @@ impl App {
                     }
                 }
                 ViewMode::Settings => {
-                    if self.settings_cursor < 2 {
+                    if self.settings_cursor < 3 {
                         self.settings_cursor += 1;
                     }
                 }
@@ -564,6 +569,12 @@ impl App {
                 self.store.config.default_volume = self.volume;
                 self.player.set_volume(self.volume as f64);
             }
+            3 => {
+                self.store.config.discord_rpc = !self.store.config.discord_rpc;
+                if !self.store.config.discord_rpc {
+                    self.discord.clear();
+                }
+            }
             _ => {}
         }
         self.store.save();
@@ -579,6 +590,30 @@ impl App {
                 crate::audio::PlayerEvent::Volume(v) => self.volume = v as u32,
                 crate::audio::PlayerEvent::PlaybackEnded => self.play_next(),
                 _ => {}
+            }
+        }
+
+        // Discord Rich Presence update (every 1s)
+        if self.store.config.discord_rpc {
+            let should_update = match self.last_rpc_update {
+                Some(last) => last.elapsed() >= std::time::Duration::from_secs(1),
+                None => true,
+            };
+
+            if should_update {
+                self.last_rpc_update = Some(std::time::Instant::now());
+                if let Some(track) = self.current_track() {
+                    self.discord.update(
+                        &track.title,
+                        &track.artist,
+                        track.artwork_url.clone(),
+                        self.current_pos,
+                        self.total_duration,
+                        self.is_paused,
+                    );
+                } else {
+                    self.discord.clear();
+                }
             }
         }
 

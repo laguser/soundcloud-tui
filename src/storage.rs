@@ -56,6 +56,8 @@ pub struct TrackItem {
     pub url: String,
     #[serde(default)]
     pub stream_url: Option<String>,
+    #[serde(default)]
+    pub artwork_url: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -79,6 +81,7 @@ pub struct Config {
     pub theme: ThemeColor,
     pub visual: VisualStyle,
     pub default_volume: u32,
+    pub discord_rpc: bool,
     pub cookies_path: Option<String>,
 }
 
@@ -88,6 +91,7 @@ impl Default for Config {
             theme: ThemeColor::Auto,
             visual: VisualStyle::Tape,
             default_volume: 80,
+            discord_rpc: true,
             cookies_path: None,
         }
     }
