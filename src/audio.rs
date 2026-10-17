@@ -37,16 +37,16 @@ impl AudioPlayer {
         let (tx, rx) = channel();
         let is_running = Arc::new(AtomicBool::new(false));
 
-        // Start mpv in idle background mode with tuned fast network streaming
+        // Start mpv in idle background mode with ultra-low probe latency
         let process = Command::new("mpv")
             .arg("--idle=yes")
             .arg("--no-video")
             .arg("--msg-level=all=no")
             .arg("--ytdl-format=bestaudio/best")
-            .arg("--demuxer-max-bytes=10M")
-            .arg("--demuxer-readahead-secs=15")
-            .arg("--cache=yes")
-            .arg("--cache-secs=30")
+            .arg("--demuxer-lavf-probesize=32768")
+            .arg("--demuxer-lavf-analyzeduration=0.1")
+            .arg("--demuxer-readahead-secs=8")
+            .arg("--audio-buffer=0.15")
             .arg(format!("--input-ipc-server={}", ipc_path))
             .stdin(Stdio::null())
             .stdout(Stdio::null())

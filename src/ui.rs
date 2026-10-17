@@ -32,6 +32,8 @@ pub fn render(f: &mut Frame, app: &App) {
     match app.view_mode {
         ViewMode::Search => render_search_view(f, app, chunks[2]),
         ViewMode::Queue => render_queue_view(f, app, chunks[2]),
+        ViewMode::Playlists => render_playlists_view(f, app, chunks[2]),
+        ViewMode::PlaylistDetail => render_playlist_detail_view(f, app, chunks[2]),
         ViewMode::Favorites => render_favorites_view(f, app, chunks[2]),
         ViewMode::History => render_history_view(f, app, chunks[2]),
         ViewMode::Settings => render_settings_view(f, app, chunks[2]),
@@ -241,6 +243,85 @@ fn render_queue_view(f: &mut Frame, app: &App, area: Rect) {
     }
 
     render_tracks_list(f, &app.queue, app.queue_cursor, accent, area, app);
+}
+
+fn render_playlists_view(f: &mut Frame, app: &App, area: Rect) {
+    let accent = app.theme_accent();
+    if app.store.playlists.is_empty() {
+        let empty = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled("no saved playlists", Style::default().fg(Color::Rgb(80, 80, 80)))),
+            Line::from(Span::styled("paste any soundcloud playlist link in search to load", Style::default().fg(Color::Rgb(50, 50, 50)))),
+        ])
+        .alignment(Alignment::Center);
+        f.render_widget(empty, area);
+        return;
+    }
+
+    let max_lines = area.height as usize;
+    if max_lines == 0 {
+        return;
+    }
+
+    let cursor = app.playlists_cursor;
+    let scroll_offset = if cursor >= max_lines {
+        cursor - max_lines + 1
+    } else {
+        0
+    };
+
+    let mut lines = Vec::new();
+    for (idx, pl) in app.store.playlists.iter().enumerate().skip(scroll_offset).take(max_lines) {
+        let is_selected = idx == cursor;
+        let prefix = if is_selected { " → " } else { "   " };
+        let title_style = if is_selected {
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Rgb(150, 150, 150))
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(prefix, Style::default().fg(if is_selected { accent } else { Color::Rgb(60, 60, 60) })),
+            Span::styled("≡ ", Style::default().fg(accent)),
+            Span::styled(format!("{:<38}", truncate_str(&pl.title, 36)), title_style),
+            Span::styled(format!(" {:<20}", truncate_str(&pl.author, 18)), Style::default().fg(Color::Rgb(80, 80, 80))),
+            Span::styled(format!("{:>6} tracks", pl.track_count), Style::default().fg(Color::Rgb(65, 65, 65))),
+        ]));
+    }
+
+    let p = Paragraph::new(lines);
+    f.render_widget(p, area);
+}
+
+fn render_playlist_detail_view(f: &mut Frame, app: &App, area: Rect) {
+    let accent = app.theme_accent();
+    let playlist = match app.selected_playlist_idx.and_then(|i| app.store.playlists.get(i)) {
+        Some(p) => p,
+        None => {
+            let empty = Paragraph::new("Playlist not found").alignment(Alignment::Center);
+            f.render_widget(empty, area);
+            return;
+        }
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Header info
+            Constraint::Length(1), // Blank
+            Constraint::Fill(1),   // Tracks
+        ])
+        .split(area);
+
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled("≡ ", Style::default().fg(accent)),
+        Span::styled(&playlist.title, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("  by {}  •  {} tracks", playlist.author, playlist.track_count), Style::default().fg(Color::Rgb(90, 90, 90))),
+        Span::styled("  (esc to back)", Style::default().fg(Color::Rgb(60, 60, 60))),
+    ]));
+    f.render_widget(header, chunks[0]);
+
+    render_tracks_list(f, &playlist.tracks, app.playlist_detail_cursor, accent, chunks[2], app);
 }
 
 fn render_favorites_view(f: &mut Frame, app: &App, area: Rect) {

@@ -69,6 +69,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                     if app.is_editing_search {
                         app.is_editing_search = false;
+                    } else if app.view_mode == app::ViewMode::PlaylistDetail {
+                        app.view_mode = app::ViewMode::Playlists;
                     } else {
                         app.view_mode = app::ViewMode::Search;
                     }

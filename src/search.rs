@@ -6,6 +6,7 @@ use std::thread;
 
 pub enum SearchResult {
     Success(Vec<TrackItem>),
+    PlaylistLoaded(crate::storage::PlaylistItem),
     Error(String),
 }
 
@@ -163,13 +164,96 @@ impl SearchEngine {
         is_direct_url: bool,
         cached_cid: &Arc<Mutex<Option<String>>>,
     ) -> SearchResult {
-        // Fast path: if not a direct URL, query SoundCloud api-v2 via curl
-        if !is_direct_url {
-            let cid = {
-                let guard = cached_cid.lock().unwrap();
-                guard.clone().unwrap_or_else(|| "tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ".to_string())
+        let cid = {
+            let guard = cached_cid.lock().unwrap();
+            guard.clone().unwrap_or_else(|| "tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ".to_string())
+        };
+
+        // If direct URL, check if it's a playlist or track via api-v2/resolve
+        if is_direct_url {
+            let full_url = if !query.starts_with("http") {
+                format!("https://{}", query)
+            } else {
+                query.to_string()
             };
 
+            let resolve_endpoint = format!(
+                "https://api-v2.soundcloud.com/resolve?url={}&client_id={}",
+                full_url, cid
+            );
+
+            let output = Command::new("curl")
+                .arg("-s")
+                .arg("-m")
+                .arg("6")
+                .arg("-H")
+                .arg("User-Agent: Mozilla/5.0")
+                .arg(&resolve_endpoint)
+                .output();
+
+            if let Ok(out) = output {
+                if out.status.success() {
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                        let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+                        if kind == "playlist" {
+                            let title = v.get("title").and_then(|t| t.as_str()).unwrap_or("Untitled Playlist").to_string();
+                            let author = v.get("user").and_then(|u| u.get("username")).and_then(|u| u.as_str()).unwrap_or("Unknown").to_string();
+                            let playlist_id = v.get("id").map(|i| i.to_string()).unwrap_or_default();
+                            let mut playlist_tracks = Vec::new();
+
+                            if let Some(track_array) = v.get("tracks").and_then(|t| t.as_array()) {
+                                for t in track_array {
+                                    let t_id = t.get("id").map(|i| i.to_string()).unwrap_or_default();
+                                    let t_title = t.get("title").and_then(|x| x.as_str()).unwrap_or("Unknown").to_string();
+                                    let t_artist = t.get("user").and_then(|u| u.get("username")).and_then(|u| u.as_str()).unwrap_or(&author).to_string();
+                                    let t_url = t.get("permalink_url").and_then(|u| u.as_str()).unwrap_or("").to_string();
+                                    let t_duration = t.get("duration").and_then(|d| d.as_f64()).map(|ms| ms / 1000.0).unwrap_or(0.0);
+
+                                    if !t_id.is_empty() && !t_title.is_empty() {
+                                        playlist_tracks.push(TrackItem {
+                                            id: t_id,
+                                            title: t_title,
+                                            artist: t_artist,
+                                            duration: t_duration,
+                                            url: if t_url.is_empty() { format!("https://soundcloud.com/tracks/{}", playlist_tracks.len()) } else { t_url },
+                                            stream_url: None,
+                                        });
+                                    }
+                                }
+                            }
+
+                            let track_count = playlist_tracks.len();
+                            return SearchResult::PlaylistLoaded(crate::storage::PlaylistItem {
+                                id: playlist_id,
+                                title,
+                                author,
+                                track_count,
+                                url: full_url,
+                                tracks: playlist_tracks,
+                            });
+                        } else if kind == "track" {
+                            let id = v.get("id").map(|i| i.to_string()).unwrap_or_default();
+                            let title = v.get("title").and_then(|t| t.as_str()).unwrap_or("Unknown").to_string();
+                            let artist = v.get("user").and_then(|u| u.get("username")).and_then(|u| u.as_str()).unwrap_or("SoundCloud").to_string();
+                            let url = v.get("permalink_url").and_then(|u| u.as_str()).unwrap_or(&full_url).to_string();
+                            let duration = v.get("duration").and_then(|d| d.as_f64()).map(|ms| ms / 1000.0).unwrap_or(0.0);
+
+                            return SearchResult::Success(vec![TrackItem {
+                                id,
+                                title,
+                                artist,
+                                duration,
+                                url,
+                                stream_url: None,
+                            }]);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fast path: if not a direct URL, query SoundCloud api-v2 via curl
+        if !is_direct_url {
             let encoded_q = query.replace(' ', "%20");
             let api_url = format!(
                 "https://api-v2.soundcloud.com/search/tracks?q={}&client_id={}&limit=25",

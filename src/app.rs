@@ -9,8 +9,10 @@ use std::time::Instant;
 pub enum ViewMode {
     Search,
     Queue,
-    History,
+    Playlists,
+    PlaylistDetail,
     Favorites,
+    History,
     Settings,
 }
 
@@ -19,8 +21,10 @@ impl ViewMode {
         match self {
             ViewMode::Search => "search",
             ViewMode::Queue => "queue",
-            ViewMode::History => "history",
+            ViewMode::Playlists => "playlists",
+            ViewMode::PlaylistDetail => "playlist",
             ViewMode::Favorites => "favorites",
+            ViewMode::History => "history",
             ViewMode::Settings => "settings",
         }
     }
@@ -40,6 +44,10 @@ pub struct App {
     pub queue: Vec<TrackItem>,
     pub queue_cursor: usize,
     pub current_track_idx: Option<usize>,
+
+    pub playlists_cursor: usize,
+    pub selected_playlist_idx: Option<usize>,
+    pub playlist_detail_cursor: usize,
 
     pub history_cursor: usize,
     pub favorites_cursor: usize,
@@ -78,6 +86,10 @@ impl App {
             queue: Vec::new(),
             queue_cursor: 0,
             current_track_idx: None,
+
+            playlists_cursor: 0,
+            selected_playlist_idx: None,
+            playlist_detail_cursor: 0,
 
             history_cursor: 0,
             favorites_cursor: 0,
@@ -217,7 +229,7 @@ impl App {
             }
         }
 
-        // Functional view switches: F1-F5 (like ttype F1-F4)
+        // Functional view switches: F1-F6
         match key.code {
             KeyCode::F(1) => {
                 self.view_mode = ViewMode::Search;
@@ -230,16 +242,21 @@ impl App {
                 return;
             }
             KeyCode::F(3) => {
-                self.view_mode = ViewMode::Favorites;
+                self.view_mode = ViewMode::Playlists;
                 self.is_editing_search = false;
                 return;
             }
             KeyCode::F(4) => {
-                self.view_mode = ViewMode::History;
+                self.view_mode = ViewMode::Favorites;
                 self.is_editing_search = false;
                 return;
             }
             KeyCode::F(5) => {
+                self.view_mode = ViewMode::History;
+                self.is_editing_search = false;
+                return;
+            }
+            KeyCode::F(6) => {
                 self.view_mode = ViewMode::Settings;
                 self.is_editing_search = false;
                 return;
@@ -248,7 +265,9 @@ impl App {
                 // Tab cycles views
                 self.view_mode = match self.view_mode {
                     ViewMode::Search => ViewMode::Queue,
-                    ViewMode::Queue => ViewMode::Favorites,
+                    ViewMode::Queue => ViewMode::Playlists,
+                    ViewMode::Playlists => ViewMode::Favorites,
+                    ViewMode::PlaylistDetail => ViewMode::Playlists,
                     ViewMode::Favorites => ViewMode::History,
                     ViewMode::History => ViewMode::Settings,
                     ViewMode::Settings => ViewMode::Search,
@@ -341,6 +360,16 @@ impl App {
                         self.queue_cursor -= 1;
                     }
                 }
+                ViewMode::Playlists => {
+                    if self.playlists_cursor > 0 {
+                        self.playlists_cursor -= 1;
+                    }
+                }
+                ViewMode::PlaylistDetail => {
+                    if self.playlist_detail_cursor > 0 {
+                        self.playlist_detail_cursor -= 1;
+                    }
+                }
                 ViewMode::Favorites => {
                     if self.favorites_cursor > 0 {
                         self.favorites_cursor -= 1;
@@ -368,6 +397,22 @@ impl App {
                 ViewMode::Queue => {
                     if !self.queue.is_empty() && self.queue_cursor + 1 < self.queue.len() {
                         self.queue_cursor += 1;
+                    }
+                }
+                ViewMode::Playlists => {
+                    if !self.store.playlists.is_empty()
+                        && self.playlists_cursor + 1 < self.store.playlists.len()
+                    {
+                        self.playlists_cursor += 1;
+                    }
+                }
+                ViewMode::PlaylistDetail => {
+                    if let Some(idx) = self.selected_playlist_idx {
+                        if let Some(pl) = self.store.playlists.get(idx) {
+                            if !pl.tracks.is_empty() && self.playlist_detail_cursor + 1 < pl.tracks.len() {
+                                self.playlist_detail_cursor += 1;
+                            }
+                        }
                     }
                 }
                 ViewMode::Favorites => {
@@ -401,6 +446,22 @@ impl App {
                         self.play_track(track);
                     }
                 }
+                ViewMode::Playlists => {
+                    if !self.store.playlists.is_empty() && self.playlists_cursor < self.store.playlists.len() {
+                        self.selected_playlist_idx = Some(self.playlists_cursor);
+                        self.playlist_detail_cursor = 0;
+                        self.view_mode = ViewMode::PlaylistDetail;
+                    }
+                }
+                ViewMode::PlaylistDetail => {
+                    if let Some(idx) = self.selected_playlist_idx {
+                        if let Some(pl) = self.store.playlists.get(idx) {
+                            if let Some(track) = pl.tracks.get(self.playlist_detail_cursor).cloned() {
+                                self.play_track(track);
+                            }
+                        }
+                    }
+                }
                 ViewMode::Favorites => {
                     if let Some(track) = self.store.liked.get(self.favorites_cursor).cloned() {
                         self.play_track(track);
@@ -423,6 +484,13 @@ impl App {
                     ViewMode::History => {
                         self.store.history.get(self.history_cursor).map(|h| h.track.clone())
                     }
+                    ViewMode::PlaylistDetail => {
+                        if let Some(idx) = self.selected_playlist_idx {
+                            self.store.playlists.get(idx).and_then(|p| p.tracks.get(self.playlist_detail_cursor).cloned())
+                        } else {
+                            None
+                        }
+                    }
                     _ => None,
                 };
                 if let Some(t) = track {
@@ -431,7 +499,7 @@ impl App {
                 }
             }
             KeyCode::Char('d') => {
-                // Remove from queue or favorites
+                // Remove from queue or favorites or playlists
                 if self.view_mode == ViewMode::Queue && !self.queue.is_empty() {
                     let removed = self.queue.remove(self.queue_cursor);
                     self.set_status(&format!("Removed from Queue: {}", removed.title));
@@ -444,6 +512,13 @@ impl App {
                     self.set_status(&format!("Removed from Favorites: {}", removed.title));
                     if self.favorites_cursor >= self.store.liked.len() && self.favorites_cursor > 0 {
                         self.favorites_cursor -= 1;
+                    }
+                } else if self.view_mode == ViewMode::Playlists && !self.store.playlists.is_empty() {
+                    let removed = self.store.playlists.remove(self.playlists_cursor);
+                    self.store.save();
+                    self.set_status(&format!("Removed Playlist: {}", removed.title));
+                    if self.playlists_cursor >= self.store.playlists.len() && self.playlists_cursor > 0 {
+                        self.playlists_cursor -= 1;
                     }
                 }
             }
@@ -515,6 +590,13 @@ impl App {
                     self.set_status(&format!("Found {} tracks", tracks.len()));
                     self.search_results = tracks;
                     self.search_cursor = 0;
+                }
+                SearchResult::PlaylistLoaded(playlist) => {
+                    self.set_status(&format!("Playlist loaded: {} ({} tracks)", playlist.title, playlist.track_count));
+                    self.store.save_playlist(playlist);
+                    self.selected_playlist_idx = Some(0);
+                    self.playlist_detail_cursor = 0;
+                    self.view_mode = ViewMode::PlaylistDetail;
                 }
                 SearchResult::Error(err) => {
                     self.set_status(&format!("Error: {}", err));

@@ -59,6 +59,16 @@ pub struct TrackItem {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PlaylistItem {
+    pub id: String,
+    pub title: String,
+    pub author: String,
+    pub track_count: usize,
+    pub url: String,
+    pub tracks: Vec<TrackItem>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct HistoryEntry {
     pub track: TrackItem,
     pub played_at: DateTime<Local>,
@@ -88,6 +98,8 @@ pub struct DataStore {
     pub config: Config,
     pub history: Vec<HistoryEntry>,
     pub liked: Vec<TrackItem>,
+    #[serde(default)]
+    pub playlists: Vec<PlaylistItem>,
 }
 
 impl DataStore {
@@ -169,5 +181,18 @@ impl DataStore {
 
     pub fn is_liked(&self, url: &str) -> bool {
         self.liked.iter().any(|t| t.url == url)
+    }
+
+    pub fn save_playlist(&mut self, playlist: PlaylistItem) {
+        self.playlists.retain(|p| p.url != playlist.url && p.id != playlist.id);
+        self.playlists.insert(0, playlist);
+        self.save();
+    }
+
+    pub fn remove_playlist(&mut self, index: usize) {
+        if index < self.playlists.len() {
+            self.playlists.remove(index);
+            self.save();
+        }
     }
 }
