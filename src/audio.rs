@@ -37,7 +37,7 @@ impl AudioPlayer {
         let (tx, rx) = channel();
         let is_running = Arc::new(AtomicBool::new(false));
 
-        // Start mpv in idle background mode with reliable streaming & IPC (completely headless)
+        // Start mpv in idle background mode with lossless audiophile streaming & IPC (completely headless)
         let process = Command::new("mpv")
             .arg("--idle=yes")
             .arg("--no-video")
@@ -47,8 +47,10 @@ impl AudioPlayer {
             .arg("--ytdl-format=bestaudio/best")
             .arg("--user-agent=Mozilla/5.0 (X11; Linux x86_64)")
             .arg("--hls-bitrate=max")
-            .arg("--demuxer-readahead-secs=10")
-            .arg("--audio-buffer=0.2")
+            .arg("--audio-format=float")
+            .arg("--audio-pitch-correction=no")
+            .arg("--demuxer-readahead-secs=15")
+            .arg("--audio-buffer=0.5")
             .arg(format!("--input-ipc-server={}", ipc_path))
             .stdin(Stdio::null())
             .stdout(Stdio::null())

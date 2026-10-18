@@ -102,6 +102,47 @@ impl SearchEngine {
         self.rx.try_recv().ok()
     }
 
+    pub fn choose_best_transcoding<'a>(transcodings: &'a [serde_json::Value]) -> Option<&'a str> {
+        let score = |tr: &serde_json::Value| -> i32 {
+            let snipped = tr.get("snipped").and_then(|s| s.as_bool()).unwrap_or(false);
+            if snipped {
+                return -100;
+            }
+            let preset = tr.get("preset").and_then(|p| p.as_str()).unwrap_or("");
+            let proto = tr.get("format").and_then(|f| f.get("protocol")).and_then(|p| p.as_str()).unwrap_or("");
+            let quality = tr.get("quality").and_then(|q| q.as_str()).unwrap_or("");
+
+            let mut pts = 0;
+            // Highest quality codec presets
+            if preset.contains("original") || preset.contains("flac") || preset.contains("wav") || preset.contains("lossless") {
+                pts += 1000;
+            } else if preset.contains("aac_256") || preset.contains("256") {
+                pts += 500;
+            } else if preset.contains("aac_160") || preset.contains("160") {
+                pts += 400;
+            } else if preset.contains("abr_sq") || preset.contains("128") || preset.contains("mp3_1_0") || quality == "sq" {
+                pts += 250;
+            } else if preset.contains("96") || quality == "lq" {
+                pts += 100;
+            }
+
+            // Protocol compatibility & instant seek:
+            if proto == "progressive" {
+                pts += 15;
+            } else if proto == "hls" {
+                pts += 10;
+            } else if proto.contains("encrypted") {
+                pts += 2;
+            }
+            pts
+        };
+
+        transcodings
+            .iter()
+            .max_by_key(|tr| score(tr))
+            .and_then(|tr| tr.get("url").and_then(|u| u.as_str()))
+    }
+
     pub fn resolve_stream_url(track: &TrackItem, client_id_holder: &Arc<Mutex<Option<String>>>) -> Option<String> {
         // 1. Check local on-disk cache first
         if let Some(cached_file) = crate::storage::DataStore::get_cached_track_path(&track.id) {
@@ -160,17 +201,8 @@ impl SearchEngine {
         if output.status.success() {
             if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
                 if let Some(transcodings) = v.get("media").and_then(|m| m.get("transcodings")).and_then(|t| t.as_array()) {
-                    // Prefer progressive format for instant seek and fast playback
-                    let mut chosen_url = None;
-                    for tr in transcodings {
-                        if tr.get("format").and_then(|f| f.get("protocol")).and_then(|p| p.as_str()) == Some("progressive") {
-                            chosen_url = tr.get("url").and_then(|u| u.as_str());
-                            break;
-                        }
-                    }
-                    if chosen_url.is_none() && !transcodings.is_empty() {
-                        chosen_url = transcodings[0].get("url").and_then(|u| u.as_str());
-                    }
+                    let chosen_url = Self::choose_best_transcoding(transcodings)
+                        .or_else(|| transcodings.first().and_then(|t| t.get("url")).and_then(|u| u.as_str()));
 
                     if let Some(tr_url) = chosen_url {
                         let stream_lookup = format!("{}?client_id={}", tr_url, cid);
@@ -501,9 +533,7 @@ impl SearchEngine {
                                     .get("media")
                                     .and_then(|m| m.get("transcodings"))
                                     .and_then(|t| t.as_array())
-                                    .and_then(|arr| arr.first())
-                                    .and_then(|t| t.get("url"))
-                                    .and_then(|u| u.as_str())
+                                    .and_then(|arr| Self::choose_best_transcoding(arr).or_else(|| arr.first().and_then(|t| t.get("url")).and_then(|u| u.as_str())))
                                     .map(|s| s.to_string());
 
                                 if !url.is_empty() && !title.is_empty() {
