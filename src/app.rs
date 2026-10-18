@@ -222,7 +222,7 @@ impl App {
         }
         self.is_paused = false;
         self.current_pos = 0.0;
-        self.total_duration = 0.0;
+        self.total_duration = track.duration;
         self.prefetched_track_id = None;
 
         // Update MPRIS2 for Caelestia Shell and system media keys
