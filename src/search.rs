@@ -232,6 +232,8 @@ impl SearchEngine {
                 .arg(stream_url)
                 .arg("-c")
                 .arg("copy")
+                .arg("-f")
+                .arg("ipod")
                 .arg(&tmp_file)
                 .status();
 

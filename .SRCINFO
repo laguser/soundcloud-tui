@@ -1,0 +1,21 @@
+pkgbase = soundcloud-tui-git
+	pkgdesc = Minimalist terminal SoundCloud & YouTube player for Linux in Rust (@ttype aesthetic, MPRIS2, Synced Lyrics)
+	pkgver = 0.2.0.r0.ga814938
+	pkgrel = 1
+	url = https://github.com/laguser/soundcloud-tui
+	arch = x86_64
+	license = MIT
+	makedepends = cargo
+	makedepends = git
+	makedepends = pkg-config
+	depends = mpv
+	depends = dbus
+	optdepends = yt-dlp: For resolving tracks and playlists
+	optdepends = curl: For network fetching
+	provides = soundcloud-tui
+	provides = sctui
+	conflicts = soundcloud-tui
+	source = soundcloud-tui-git::git+https://github.com/laguser/soundcloud-tui.git
+	sha256sums = SKIP
+
+pkgname = soundcloud-tui-git
