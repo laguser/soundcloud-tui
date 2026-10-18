@@ -37,10 +37,12 @@ impl AudioPlayer {
         let (tx, rx) = channel();
         let is_running = Arc::new(AtomicBool::new(false));
 
-        // Start mpv in idle background mode with reliable streaming & IPC
+        // Start mpv in idle background mode with reliable streaming & IPC (completely headless)
         let process = Command::new("mpv")
             .arg("--idle=yes")
             .arg("--no-video")
+            .arg("--force-window=no")
+            .arg("--vo=null")
             .arg("--msg-level=all=no")
             .arg("--ytdl-format=bestaudio/best")
             .arg("--user-agent=Mozilla/5.0 (X11; Linux x86_64)")
