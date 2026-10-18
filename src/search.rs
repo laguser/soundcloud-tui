@@ -243,12 +243,13 @@ impl SearchEngine {
                 let _ = std::fs::remove_file(tmp_file);
             }
         } else {
-            // Direct progressive MP3 download via curl
+            // Check if it is a progressive audio or another playlist
             let mp3_file = cache_dir.join(format!("{}.mp3", safe_name));
             let tmp_file = cache_dir.join(format!("{}.mp3.tmp", safe_name));
 
             let _ = Command::new("curl")
                 .arg("-s")
+                .arg("-L")
                 .arg("-m")
                 .arg("180")
                 .arg("-H")
@@ -258,7 +259,18 @@ impl SearchEngine {
                 .arg(&tmp_file)
                 .status();
 
-            if tmp_file.exists() && std::fs::metadata(&tmp_file).map(|m| m.len() > 100 * 1024).unwrap_or(false) {
+            if tmp_file.exists() && std::fs::metadata(&tmp_file).map(|m| m.len() > 250 * 1024).unwrap_or(false) {
+                // Verify it is not an m3u8 playlist text
+                if let Ok(mut f) = std::fs::File::open(&tmp_file) {
+                    use std::io::Read;
+                    let mut head = [0u8; 10];
+                    if let Ok(n) = f.read(&mut head) {
+                        if n > 4 && &head[..4] == b"#EXT" {
+                            let _ = std::fs::remove_file(&tmp_file);
+                            return;
+                        }
+                    }
+                }
                 let _ = std::fs::rename(tmp_file, mp3_file);
             } else {
                 let _ = std::fs::remove_file(tmp_file);
@@ -829,18 +841,23 @@ impl SearchEngine {
                 .output();
 
             if let Ok(out) = output_pl {
-            if out.status.success() {
-                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
-                    if let Some(collection) = v.get("collection").and_then(|c| c.as_array()) {
-                        for item in collection {
-                            if let Some(pl_obj) = item.get("playlist") {
+                if out.status.success() {
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                        if let Some(collection) = v.get("collection").and_then(|c| c.as_array()) {
+                            for item in collection {
+                                let pl_obj = item.get("playlist").unwrap_or(item);
                                 let pl_id = pl_obj.get("id").map(|i| i.to_string()).unwrap_or_default();
+                                if pl_id.is_empty() {
+                                    continue;
+                                }
                                 let pl_title = pl_obj.get("title").and_then(|t| t.as_str()).unwrap_or("Cloud Playlist").to_string();
                                 let pl_author = pl_obj.get("user").and_then(|u| u.get("username")).and_then(|u| u.as_str()).unwrap_or("You").to_string();
                                 let pl_url = pl_obj.get("permalink_url").and_then(|u| u.as_str()).unwrap_or("").to_string();
                                 let track_count = pl_obj.get("track_count").and_then(|t| t.as_u64()).unwrap_or(0) as usize;
 
                                 let mut pl_tracks = Vec::new();
+                                let mut stub_ids = Vec::new();
+
                                 if let Some(arr) = pl_obj.get("tracks").and_then(|t| t.as_array()) {
                                     for t in arr {
                                         let tid = t.get("id").map(|i| i.to_string()).unwrap_or_default();
@@ -850,24 +867,86 @@ impl SearchEngine {
                                         let dur = t.get("duration").and_then(|d| d.as_f64()).map(|ms| ms / 1000.0).unwrap_or(0.0);
                                         let art = t.get("artwork_url").and_then(|a| a.as_str()).map(|s| s.to_string());
                                         let wf = t.get("waveform_url").and_then(|w| w.as_str()).map(|s| s.to_string());
-                                        if !tid.is_empty() && !title.is_empty() {
-                                            pl_tracks.push(TrackItem {
-                                                id: tid,
-                                                title,
-                                                artist,
-                                                duration: dur,
-                                                url,
-                                                stream_url: None,
-                                                artwork_url: art,
-                                                waveform_url: wf,
-                                                user_permalink: None,
-                                                user_id: None,
-                                            });
+
+                                        if !tid.is_empty() {
+                                            if title.is_empty() {
+                                                stub_ids.push(tid.clone());
+                                                pl_tracks.push(TrackItem {
+                                                    id: tid,
+                                                    title: "Loading...".to_string(),
+                                                    artist: pl_author.clone(),
+                                                    duration: 0.0,
+                                                    url: String::new(),
+                                                    stream_url: None,
+                                                    artwork_url: None,
+                                                    waveform_url: None,
+                                                    user_permalink: None,
+                                                    user_id: None,
+                                                });
+                                            } else {
+                                                pl_tracks.push(TrackItem {
+                                                    id: tid,
+                                                    title,
+                                                    artist,
+                                                    duration: dur,
+                                                    url,
+                                                    stream_url: None,
+                                                    artwork_url: art,
+                                                    waveform_url: wf,
+                                                    user_permalink: None,
+                                                    user_id: None,
+                                                });
+                                            }
                                         }
                                     }
                                 }
 
-                                if !pl_id.is_empty() {
+                                // Hydrate track stubs in chunks of 50
+                                for chunk in stub_ids.chunks(50) {
+                                    let ids_param = chunk.join(",");
+                                    let bulk_url = format!("https://api-v2.soundcloud.com/tracks?ids={}&client_id={}", ids_param, cid);
+                                    let b_out = Command::new("curl")
+                                        .arg("-s")
+                                        .arg("-m")
+                                        .arg("8")
+                                        .arg("-H")
+                                        .arg("User-Agent: Mozilla/5.0")
+                                        .arg("-H")
+                                        .arg(&auth_header)
+                                        .arg(&bulk_url)
+                                        .output();
+
+                                    if let Ok(res) = b_out {
+                                        if res.status.success() {
+                                            if let Ok(full_tracks) = serde_json::from_slice::<Vec<serde_json::Value>>(&res.stdout) {
+                                                for ft in full_tracks {
+                                                    let fid = ft.get("id").map(|i| i.to_string()).unwrap_or_default();
+                                                    if let Some(target) = pl_tracks.iter_mut().find(|pt| pt.id == fid) {
+                                                        if let Some(ftitle) = ft.get("title").and_then(|x| x.as_str()) {
+                                                            target.title = ftitle.to_string();
+                                                        }
+                                                        if let Some(fuser) = ft.get("user").and_then(|u| u.get("username")).and_then(|u| u.as_str()) {
+                                                            target.artist = fuser.to_string();
+                                                        }
+                                                        if let Some(furl) = ft.get("permalink_url").and_then(|u| u.as_str()) {
+                                                            target.url = furl.to_string();
+                                                        }
+                                                        if let Some(fdur) = ft.get("duration").and_then(|d| d.as_f64()) {
+                                                            target.duration = fdur / 1000.0;
+                                                        }
+                                                        target.artwork_url = ft.get("artwork_url").and_then(|a| a.as_str()).map(|s| s.to_string());
+                                                        target.waveform_url = ft.get("waveform_url").and_then(|w| w.as_str()).map(|s| s.to_string());
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Remove any stubs that couldn't be resolved or are empty
+                                pl_tracks.retain(|t| !t.title.is_empty() && t.title != "Loading...");
+
+                                if !pl_id.is_empty() && !user_playlists.iter().any(|p: &crate::storage::PlaylistItem| p.id == pl_id) {
                                     user_playlists.push(crate::storage::PlaylistItem {
                                         id: pl_id,
                                         title: pl_title,
@@ -883,7 +962,6 @@ impl SearchEngine {
                 }
             }
         }
-    }
 
         if liked_tracks.is_empty() && user_playlists.is_empty() {
             SearchResult::Error("Failed to fetch library with oauth token. Check token in config.json".to_string())
