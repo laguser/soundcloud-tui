@@ -692,85 +692,143 @@ impl SearchEngine {
     }
 
     fn execute_fetch_library(oauth_token: &str, cached_cid: &Arc<Mutex<Option<String>>>) -> SearchResult {
-        let cid = {
-            let guard = cached_cid.lock().unwrap();
-            guard.clone().unwrap_or_else(|| "tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ".to_string())
-        };
+        // Parse JWT payload to extract user_id and client_id if available
+        let mut user_id: Option<String> = None;
+        let mut jwt_client_id: Option<String> = None;
 
-        let auth_header = format!("Authorization: OAuth {}", oauth_token.trim());
-
-        // 1. Fetch user's likes
-        let likes_url = format!("https://api-v2.soundcloud.com/me/likes/tracks?client_id={}&limit=50", cid);
-        let output_likes = Command::new("curl")
-            .arg("-s")
-            .arg("-m")
-            .arg("8")
-            .arg("-H")
-            .arg("User-Agent: Mozilla/5.0")
-            .arg("-H")
-            .arg(&auth_header)
-            .arg(&likes_url)
-            .output();
-
-        let mut liked_tracks = Vec::new();
-        if let Ok(out) = output_likes {
-            if out.status.success() {
-                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
-                    if let Some(collection) = v.get("collection").and_then(|c| c.as_array()) {
-                        for item in collection {
-                            let track_obj = item.get("track").unwrap_or(item);
-                            let id = track_obj.get("id").map(|i| i.to_string()).unwrap_or_default();
-                            let title = track_obj.get("title").and_then(|t| t.as_str()).unwrap_or("Unknown").to_string();
-                            let artist = track_obj
-                                .get("publisher_metadata")
-                                .and_then(|pm| pm.get("artist"))
-                                .and_then(|a| a.as_str())
-                                .filter(|s| !s.trim().is_empty())
-                                .or_else(|| track_obj.get("user").and_then(|u| u.get("username")).and_then(|u| u.as_str()))
-                                .unwrap_or("SoundCloud")
-                                .to_string();
-                            let url = track_obj.get("permalink_url").and_then(|u| u.as_str()).unwrap_or("").to_string();
-                            let duration = track_obj.get("duration").and_then(|d| d.as_f64()).map(|ms| ms / 1000.0).unwrap_or(0.0);
-                            let artwork_url = track_obj.get("artwork_url").and_then(|a| a.as_str()).map(|s| s.to_string());
-                            let waveform_url = track_obj.get("waveform_url").and_then(|w| w.as_str()).map(|s| s.to_string());
-                            let user_permalink = track_obj.get("user").and_then(|u| u.get("permalink")).and_then(|p| p.as_str()).map(|s| s.to_string());
-                            let user_id = track_obj.get("user").and_then(|u| u.get("id")).map(|i| i.to_string());
-
-                            if !url.is_empty() && !title.is_empty() {
-                                liked_tracks.push(TrackItem {
-                                    id,
-                                    title,
-                                    artist,
-                                    duration,
-                                    url,
-                                    stream_url: None,
-                                    artwork_url,
-                                    waveform_url,
-                                    user_permalink,
-                                    user_id,
-                                });
-                            }
+        let parts: Vec<&str> = oauth_token.split('.').collect();
+        if parts.len() >= 2 {
+            // Standard base64url decode
+            let b64 = parts[1].replace('-', "+").replace('_', "/");
+            let padded = format!("{}{}", b64, "=".repeat((4 - b64.len() % 4) % 4));
+            if let Ok(decoded) = std::fs::read_to_string("/dev/null") /* placeholder */ .or_else(|_| {
+                // simple base64 decoder via python / command or basic inline decoding
+                Command::new("python3")
+                    .arg("-c")
+                    .arg(format!("import base64, json, sys; print(json.dumps(json.loads(base64.b64decode('{}').decode())))", padded))
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            }) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&decoded) {
+                    if let Some(sub) = v.get("sub").and_then(|s| s.as_str()) {
+                        let uid = sub.trim_start_matches("soundcloud:users:").to_string();
+                        if !uid.is_empty() {
+                            user_id = Some(uid);
                         }
+                    }
+                    if let Some(cid) = v.get("client_id").and_then(|s| s.as_str()) {
+                        jwt_client_id = Some(cid.to_string());
                     }
                 }
             }
         }
 
+        let cid = jwt_client_id.unwrap_or_else(|| {
+            let guard = cached_cid.lock().unwrap();
+            guard.clone().unwrap_or_else(|| "QhVEWrrJKvW4uSU5u5EoI0FTXYUGzy5k".to_string())
+        });
+
+        let auth_header = format!("Authorization: OAuth {}", oauth_token.trim());
+
+        // 1. Fetch user's likes
+        let likes_urls = if let Some(uid) = &user_id {
+            vec![
+                format!("https://api-v2.soundcloud.com/users/{}/track_likes?client_id={}&limit=100", uid, cid),
+                format!("https://api-v2.soundcloud.com/users/{}/likes?client_id={}&limit=100", uid, cid),
+            ]
+        } else {
+            vec![
+                format!("https://api-v2.soundcloud.com/me/likes/tracks?client_id={}&limit=100", cid),
+                format!("https://api-v2.soundcloud.com/me/likes?client_id={}&limit=100", cid),
+            ]
+        };
+
+        let mut liked_tracks = Vec::new();
+        for likes_url in likes_urls {
+            let output_likes = Command::new("curl")
+                .arg("-s")
+                .arg("-m")
+                .arg("10")
+                .arg("-H")
+                .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64)")
+                .arg("-H")
+                .arg(&auth_header)
+                .arg(&likes_url)
+                .output();
+
+            if let Ok(out) = output_likes {
+                if out.status.success() {
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                        if let Some(collection) = v.get("collection").and_then(|c| c.as_array()) {
+                            for item in collection {
+                                let track_obj = item.get("track").unwrap_or(item);
+                                let id = track_obj.get("id").map(|i| i.to_string()).unwrap_or_default();
+                                let title = track_obj.get("title").and_then(|t| t.as_str()).unwrap_or("Unknown").to_string();
+                                let artist = track_obj
+                                    .get("publisher_metadata")
+                                    .and_then(|pm| pm.get("artist"))
+                                    .and_then(|a| a.as_str())
+                                    .filter(|s| !s.trim().is_empty())
+                                    .or_else(|| track_obj.get("user").and_then(|u| u.get("username")).and_then(|u| u.as_str()))
+                                    .unwrap_or("SoundCloud")
+                                    .to_string();
+                                let url = track_obj.get("permalink_url").and_then(|u| u.as_str()).unwrap_or("").to_string();
+                                let duration = track_obj.get("duration").and_then(|d| d.as_f64()).map(|ms| ms / 1000.0).unwrap_or(0.0);
+                                let artwork_url = track_obj.get("artwork_url").and_then(|a| a.as_str()).map(|s| s.to_string());
+                                let waveform_url = track_obj.get("waveform_url").and_then(|w| w.as_str()).map(|s| s.to_string());
+                                let user_permalink = track_obj.get("user").and_then(|u| u.get("permalink")).and_then(|p| p.as_str()).map(|s| s.to_string());
+                                let user_id_val = track_obj.get("user").and_then(|u| u.get("id")).map(|i| i.to_string());
+
+                                if !url.is_empty() && !title.is_empty() && !liked_tracks.iter().any(|t: &TrackItem| t.id == id) {
+                                    liked_tracks.push(TrackItem {
+                                        id,
+                                        title,
+                                        artist,
+                                        duration,
+                                        url,
+                                        stream_url: None,
+                                        artwork_url,
+                                        waveform_url,
+                                        user_permalink,
+                                        user_id: user_id_val,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !liked_tracks.is_empty() {
+                break;
+            }
+        }
+
         // 2. Fetch user's playlists
-        let playlists_url = format!("https://api-v2.soundcloud.com/me/library/all?client_id={}&limit=30", cid);
-        let output_pl = Command::new("curl")
-            .arg("-s")
-            .arg("-m")
-            .arg("8")
-            .arg("-H")
-            .arg("User-Agent: Mozilla/5.0")
-            .arg("-H")
-            .arg(&auth_header)
-            .arg(&playlists_url)
-            .output();
+        let playlists_urls = if let Some(uid) = &user_id {
+            vec![
+                format!("https://api-v2.soundcloud.com/users/{}/playlists?client_id={}&limit=50", uid, cid),
+                format!("https://api-v2.soundcloud.com/me/library/all?client_id={}&limit=50", cid),
+            ]
+        } else {
+            vec![
+                format!("https://api-v2.soundcloud.com/me/library/all?client_id={}&limit=50", cid),
+            ]
+        };
 
         let mut user_playlists = Vec::new();
-        if let Ok(out) = output_pl {
+        for playlists_url in playlists_urls {
+            let output_pl = Command::new("curl")
+                .arg("-s")
+                .arg("-m")
+                .arg("10")
+                .arg("-H")
+                .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64)")
+                .arg("-H")
+                .arg(&auth_header)
+                .arg(&playlists_url)
+                .output();
+
+            if let Ok(out) = output_pl {
             if out.status.success() {
                 if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
                     if let Some(collection) = v.get("collection").and_then(|c| c.as_array()) {
@@ -825,6 +883,7 @@ impl SearchEngine {
                 }
             }
         }
+    }
 
         if liked_tracks.is_empty() && user_playlists.is_empty() {
             SearchResult::Error("Failed to fetch library with oauth token. Check token in config.json".to_string())
