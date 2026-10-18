@@ -31,6 +31,7 @@ pub enum ViewMode {
     Favorites,
     History,
     UserProfile,
+    Lyrics,
     Settings,
 }
 
@@ -44,6 +45,7 @@ impl ViewMode {
             ViewMode::Favorites => "favorites",
             ViewMode::History => "history",
             ViewMode::UserProfile => "profile",
+            ViewMode::Lyrics => "lyrics",
             ViewMode::Settings => "settings",
         }
     }
@@ -85,6 +87,9 @@ pub struct App {
     pub player: AudioPlayer,
     pub search_engine: SearchEngine,
     pub discord: crate::discord::DiscordRpc,
+    pub mpris: crate::mpris::MprisManager,
+    pub lyrics_manager: crate::lyrics::LyricsManager,
+    pub current_lyrics: Option<crate::lyrics::TrackLyrics>,
     pub store: DataStore,
 
     pub is_paused: bool,
@@ -111,6 +116,8 @@ impl App {
         let player = AudioPlayer::new();
         player.set_volume(volume as f64);
         let discord = crate::discord::DiscordRpc::new(store.config.discord_client_id.clone());
+        let mpris = crate::mpris::MprisManager::new();
+        let lyrics_manager = crate::lyrics::LyricsManager::new();
 
         Self {
             view_mode: ViewMode::Search,
@@ -144,6 +151,9 @@ impl App {
             player,
             search_engine: SearchEngine::new(store.config.client_id.clone()),
             discord,
+            mpris,
+            lyrics_manager,
+            current_lyrics: None,
             store,
 
             is_paused: false,
@@ -214,6 +224,19 @@ impl App {
         self.current_pos = 0.0;
         self.total_duration = 0.0;
         self.prefetched_track_id = None;
+
+        // Update MPRIS2 for Caelestia Shell and system media keys
+        self.mpris.update(
+            &track.title,
+            &track.artist,
+            track.artwork_url.as_deref(),
+            track.duration,
+            false,
+        );
+
+        // Request lyrics
+        self.current_lyrics = None;
+        self.lyrics_manager.request_lyrics(&track.id, &track.title, &track.artist);
 
         // Fetch waveform if available
         self.fetch_waveform_for_track(&track);
@@ -311,6 +334,15 @@ impl App {
     pub fn toggle_pause(&mut self) {
         self.player.toggle_pause();
         self.is_paused = !self.is_paused;
+        if let Some(track) = self.current_track().cloned() {
+            self.mpris.update(
+                &track.title,
+                &track.artist,
+                track.artwork_url.as_deref(),
+                track.duration,
+                self.is_paused,
+            );
+        }
     }
 
     pub fn adjust_volume(&mut self, delta: i32) {
@@ -448,7 +480,8 @@ impl App {
                     ViewMode::Playlists => ViewMode::Favorites,
                     ViewMode::PlaylistDetail => ViewMode::Playlists,
                     ViewMode::Favorites => ViewMode::History,
-                    ViewMode::History => ViewMode::Settings,
+                    ViewMode::History => ViewMode::Lyrics,
+                    ViewMode::Lyrics => ViewMode::Settings,
                     ViewMode::UserProfile => ViewMode::Search,
                     ViewMode::Settings => ViewMode::Search,
                 };
@@ -510,6 +543,24 @@ impl App {
             }
             KeyCode::Char('p') => {
                 self.play_prev();
+            }
+            KeyCode::Char('y') => {
+                // Toggle Lyrics view
+                self.view_mode = if self.view_mode == ViewMode::Lyrics {
+                    ViewMode::Queue
+                } else {
+                    ViewMode::Lyrics
+                };
+                self.is_editing_search = false;
+            }
+            KeyCode::Char('S') => {
+                // Sync library if oauth_token is set
+                if let Some(token) = self.store.config.oauth_token.clone() {
+                    self.set_status("Syncing your SoundCloud library...");
+                    self.search_engine.sync_library(&token);
+                } else {
+                    self.set_status("Set 'oauth_token' in ~/.config/soundcloud-tui/config.json first");
+                }
             }
             KeyCode::Char('s') => {
                 self.shuffle = !self.shuffle;
@@ -627,6 +678,9 @@ impl App {
                         self.settings_cursor -= 1;
                     }
                 }
+                ViewMode::Lyrics => {
+                    self.seek(-5.0);
+                }
             },
             KeyCode::Down | KeyCode::Char('j') => match self.view_mode {
                 ViewMode::Search => {
@@ -683,6 +737,9 @@ impl App {
                         self.settings_cursor += 1;
                     }
                 }
+                ViewMode::Lyrics => {
+                    self.seek(5.0);
+                }
             },
             KeyCode::Enter => match self.view_mode {
                 ViewMode::Search => {
@@ -730,6 +787,9 @@ impl App {
                 }
                 ViewMode::Settings => {
                     self.cycle_setting();
+                }
+                ViewMode::Lyrics => {
+                    self.toggle_pause();
                 }
             },
             KeyCode::Char('a') => {
@@ -908,6 +968,40 @@ impl App {
             }
         }
 
+        // MPRIS events from Caelestia Shell and system media keys
+        while let Some(mpris_ev) = self.mpris.poll_event() {
+            match mpris_ev {
+                crate::mpris::MprisEvent::Play => {
+                    if self.is_paused {
+                        self.toggle_pause();
+                    }
+                }
+                crate::mpris::MprisEvent::Pause => {
+                    if !self.is_paused {
+                        self.toggle_pause();
+                    }
+                }
+                crate::mpris::MprisEvent::Toggle => {
+                    self.toggle_pause();
+                }
+                crate::mpris::MprisEvent::Next => {
+                    self.play_next();
+                }
+                crate::mpris::MprisEvent::Previous => {
+                    self.play_prev();
+                }
+            }
+        }
+
+        // Lyrics reception
+        while let Some(lyrics) = self.lyrics_manager.poll_lyrics() {
+            if let Some(track) = self.current_track() {
+                if track.id == lyrics.track_id {
+                    self.current_lyrics = Some(lyrics);
+                }
+            }
+        }
+
         // Search events
         if let Some(res) = self.search_engine.poll_result() {
             self.is_searching = false;
@@ -929,6 +1023,20 @@ impl App {
                     self.current_user_profile = Some(profile);
                     self.user_profile_cursor = 0;
                     self.view_mode = ViewMode::UserProfile;
+                }
+                SearchResult::LibraryLoaded { likes, playlists } => {
+                    let likes_len = likes.len();
+                    let pl_len = playlists.len();
+                    for t in likes {
+                        if !self.store.is_liked(&t.url) {
+                            self.store.liked.push(t);
+                        }
+                    }
+                    for pl in playlists {
+                        self.store.save_playlist(pl);
+                    }
+                    self.store.save();
+                    self.set_status(&format!("Synced library: {} likes, {} playlists", likes_len, pl_len));
                 }
                 SearchResult::Error(err) => {
                     self.set_status(&format!("Error: {}", err));

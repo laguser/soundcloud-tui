@@ -50,6 +50,16 @@ sudo apt install mpv yt-dlp
 
 ### Installation
 
+#### Pacman / Arch Linux (AUR)
+```bash
+# Using an AUR helper (paru / yay):
+paru -S soundcloud-tui-git
+# Or build locally from PKGBUILD:
+git clone https://github.com/laguser/soundcloud-tui.git
+cd soundcloud-tui
+makepkg -si
+```
+
 #### Via Cargo (Recommended)
 ```bash
 cargo install soundcloud-tui
@@ -66,7 +76,7 @@ Requires Rust (`cargo`):
 git clone https://github.com/laguser/soundcloud-tui.git
 cd soundcloud-tui
 cargo build --release
-cp target/release/sctui ~/.local/bin/
+install -m 755 target/release/sctui ~/.local/bin/
 ```
 
 ### Keybindings
@@ -77,32 +87,39 @@ cp target/release/sctui ~/.local/bin/
 | `a` | Add highlighted track to Queue |
 | `d` | Remove track from Queue / Favorites |
 | `l` | Like / unlike current track (add to Favorites) |
+| `s` | Toggle Shuffle |
+| `r` | Cycle Repeat (Off ➔ All ➔ One) |
+| `y` | Synchronized Lyrics karaoke view |
+| `S` | Sync personal SoundCloud library (likes & playlists) |
 | `←` / `→` (or `b` / `f`) | Seek -5s / +5s |
 | `+` / `-` | Volume up / down |
 | `i` or `/` | Focus search bar |
-| `tab` | Cycle views (`search` ➔ `queue` ➔ `favorites` ➔ `history` ➔ `settings`) |
-| `f1` - `f5` | Jump directly to view |
+| `tab` | Cycle views (`search` ➔ `queue` ➔ `favorites` ➔ `history` ➔ `settings` ➔ `lyrics`) |
+| `f1` - `f6` | Jump directly to view |
 | `esc` | Clear search / Back to search screen |
 | `esc esc` / `ctrl+c` | Exit |
+
+### Desktop Integration (MPRIS2 & Caelestia Shell)
+`sctui` natively registers as an MPRIS2 D-Bus media player (`org.mpris.MediaPlayer2.soundcloud-tui`).
+This provides seamless real-time integration with:
+- **Caelestia Shell** & Waybar media widgets
+- System media keys (`XF86AudioPlay`, `XF86AudioNext`, etc.)
+- Notification popups with album artwork, title, artist, and duration
 
 ---
 
 <a name="русский"></a>
 ## Русский
 
-Минималистичный терминальный SoundCloud плеер под Linux, полностью переписанный на Rust в стиле [@ttype](https://github.com/laguser/ttype). Без тяжёлых фреймворков, без `venv` и зависимостей Python — быстрый запуск, чистый прозрачный TUI интерфейс и стриминг аудио через легковесный `mpv` IPC сокет.
+Минималистичный терминальный SoundCloud плеер под Linux, полностью переписанный на Rust в стиле [@ttype](https://github.com/laguser/ttype). Без тяжёлых фреймворков, без `venv` и зависимостей Python — быстрый запуск, чистый прозрачный TUI интерфейс, стриминг аудио через легковесный `mpv` IPC сокет, синхронизированные караоке-тексты песен и поддержка системных медиа-виджетов (Caelestia Shell, Waybar, MPRIS2).
 
 ### Особенности
 - **Стиль и эстетика @ttype:** Чистый интерфейс с прозрачным фоном, адаптирующийся под цвета терминала, кастомный бегущий прогресс-бар (лента).
+- **MPRIS2 D-Bus интеграция:** Полная привязка к **Caelestia Shell**, Waybar и медиа-клавишам системы (отображение обложек, названий, управление воспроизведением).
+- **Синхронизированные слова песен (Караоке):** Нажмите `y` для открытия экрана синхронизированных текстов (LRCLIB API) с плавной подсветкой текущей строки.
+- **Синхронизация библиотеки SoundCloud:** Введите `oauth_token` в `~/.config/soundcloud-tui/config.json` и нажимайте `S` для автоматической загрузки ваших лайков и плейлистов.
 - **Полноценно под Linux:** Построен на Rust с асинхронным сокетом mpv — мгновенный отклик, никакой нагрузки на процессор и память.
 - **Поиск SoundCloud и прямые ссылки:** Быстрый поиск через `yt-dlp`, поддержка вставки прямых ссылок на треки/плейлисты SoundCloud, а также резервный поиск.
-- **Очередь и Избранное:**
-  - `F1` / Поиск: ввод запроса или ссылки.
-  - `F2` / Очередь: добавление треков в очередь нажатием `a`, удаление клавишей `d`.
-  - `F3` / Избранное: сохранение любимых треков клавишей `l`.
-  - `F4` / История: история прослушиваний с датами.
-  - `F5` / Настройки: смена тем (`auto`, `catppuccin`, `tokyo night`, `nord`, `gruvbox`, `dracula`, `amber`) и стилей ленты.
-- **Двойной Esc:** Умный выход по двойному нажатию Esc, как в `ttype`.
 
 ### Системные требования
 - `mpv` (для воспроизведения аудио)
@@ -115,14 +132,20 @@ sudo pacman -S mpv yt-dlp
 
 ### Установка
 
-#### Через Cargo (Рекомендуется):
+#### Через Pacman / AUR (Arch Linux):
 ```bash
-cargo install soundcloud-tui
+# Через AUR-хелпер (paru / yay):
+paru -S soundcloud-tui-git
+
+# Или сборка из репозитория:
+git clone https://github.com/laguser/soundcloud-tui.git
+cd soundcloud-tui
+makepkg -si
 ```
 
-#### Быстрая установка одной командой:
+#### Через Cargo:
 ```bash
-curl -sSL https://raw.githubusercontent.com/laguser/soundcloud-tui/main/install.sh | bash
+cargo install soundcloud-tui
 ```
 
 #### Сборка из исходников:
@@ -130,10 +153,11 @@ curl -sSL https://raw.githubusercontent.com/laguser/soundcloud-tui/main/install.
 git clone https://github.com/laguser/soundcloud-tui.git
 cd soundcloud-tui
 cargo build --release
-cp target/release/sctui ~/.local/bin/
+install -m 755 target/release/sctui ~/.local/bin/
 ```
 
 Запуск:
 ```bash
 sctui
 ```
+

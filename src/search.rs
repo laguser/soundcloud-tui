@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct UserProfile {
     pub id: String,
     pub username: String,
@@ -20,12 +21,14 @@ pub enum SearchResult {
     Success(Vec<TrackItem>),
     PlaylistLoaded(crate::storage::PlaylistItem),
     UserProfileLoaded(UserProfile),
+    LibraryLoaded { likes: Vec<TrackItem>, playlists: Vec<crate::storage::PlaylistItem> },
     Error(String),
 }
 
 pub enum SearchTask {
     Query(String, bool),
     FetchUser(String), // username, permalink or user_id
+    FetchLibrary(String), // oauth_token
 }
 
 pub struct SearchEngine {
@@ -53,6 +56,10 @@ impl SearchEngine {
                         let result = Self::execute_fetch_user(&user_query, &cid_clone);
                         let _ = res_tx.send(result);
                     }
+                    SearchTask::FetchLibrary(oauth_token) => {
+                        let result = Self::execute_fetch_library(&oauth_token, &cid_clone);
+                        let _ = res_tx.send(result);
+                    }
                 }
             }
         });
@@ -74,6 +81,10 @@ impl SearchEngine {
 
     pub fn fetch_user(&self, user_query: &str) {
         let _ = self.tx.send(SearchTask::FetchUser(user_query.to_string()));
+    }
+
+    pub fn sync_library(&self, oauth_token: &str) {
+        let _ = self.tx.send(SearchTask::FetchLibrary(oauth_token.to_string()));
     }
 
     pub fn prefetch_track(track: &TrackItem, client_id_holder: &Arc<Mutex<Option<String>>>) {
@@ -676,5 +687,150 @@ impl SearchEngine {
         }
 
         SearchResult::Error(format!("Could not load user profile for '{}'", user_query))
+    }
+
+    fn execute_fetch_library(oauth_token: &str, cached_cid: &Arc<Mutex<Option<String>>>) -> SearchResult {
+        let cid = {
+            let guard = cached_cid.lock().unwrap();
+            guard.clone().unwrap_or_else(|| "tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ".to_string())
+        };
+
+        let auth_header = format!("Authorization: OAuth {}", oauth_token.trim());
+
+        // 1. Fetch user's likes
+        let likes_url = format!("https://api-v2.soundcloud.com/me/likes/tracks?client_id={}&limit=50", cid);
+        let output_likes = Command::new("curl")
+            .arg("-s")
+            .arg("-m")
+            .arg("8")
+            .arg("-H")
+            .arg("User-Agent: Mozilla/5.0")
+            .arg("-H")
+            .arg(&auth_header)
+            .arg(&likes_url)
+            .output();
+
+        let mut liked_tracks = Vec::new();
+        if let Ok(out) = output_likes {
+            if out.status.success() {
+                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                    if let Some(collection) = v.get("collection").and_then(|c| c.as_array()) {
+                        for item in collection {
+                            let track_obj = item.get("track").unwrap_or(item);
+                            let id = track_obj.get("id").map(|i| i.to_string()).unwrap_or_default();
+                            let title = track_obj.get("title").and_then(|t| t.as_str()).unwrap_or("Unknown").to_string();
+                            let artist = track_obj
+                                .get("publisher_metadata")
+                                .and_then(|pm| pm.get("artist"))
+                                .and_then(|a| a.as_str())
+                                .filter(|s| !s.trim().is_empty())
+                                .or_else(|| track_obj.get("user").and_then(|u| u.get("username")).and_then(|u| u.as_str()))
+                                .unwrap_or("SoundCloud")
+                                .to_string();
+                            let url = track_obj.get("permalink_url").and_then(|u| u.as_str()).unwrap_or("").to_string();
+                            let duration = track_obj.get("duration").and_then(|d| d.as_f64()).map(|ms| ms / 1000.0).unwrap_or(0.0);
+                            let artwork_url = track_obj.get("artwork_url").and_then(|a| a.as_str()).map(|s| s.to_string());
+                            let waveform_url = track_obj.get("waveform_url").and_then(|w| w.as_str()).map(|s| s.to_string());
+                            let user_permalink = track_obj.get("user").and_then(|u| u.get("permalink")).and_then(|p| p.as_str()).map(|s| s.to_string());
+                            let user_id = track_obj.get("user").and_then(|u| u.get("id")).map(|i| i.to_string());
+
+                            if !url.is_empty() && !title.is_empty() {
+                                liked_tracks.push(TrackItem {
+                                    id,
+                                    title,
+                                    artist,
+                                    duration,
+                                    url,
+                                    stream_url: None,
+                                    artwork_url,
+                                    waveform_url,
+                                    user_permalink,
+                                    user_id,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Fetch user's playlists
+        let playlists_url = format!("https://api-v2.soundcloud.com/me/library/all?client_id={}&limit=30", cid);
+        let output_pl = Command::new("curl")
+            .arg("-s")
+            .arg("-m")
+            .arg("8")
+            .arg("-H")
+            .arg("User-Agent: Mozilla/5.0")
+            .arg("-H")
+            .arg(&auth_header)
+            .arg(&playlists_url)
+            .output();
+
+        let mut user_playlists = Vec::new();
+        if let Ok(out) = output_pl {
+            if out.status.success() {
+                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                    if let Some(collection) = v.get("collection").and_then(|c| c.as_array()) {
+                        for item in collection {
+                            if let Some(pl_obj) = item.get("playlist") {
+                                let pl_id = pl_obj.get("id").map(|i| i.to_string()).unwrap_or_default();
+                                let pl_title = pl_obj.get("title").and_then(|t| t.as_str()).unwrap_or("Cloud Playlist").to_string();
+                                let pl_author = pl_obj.get("user").and_then(|u| u.get("username")).and_then(|u| u.as_str()).unwrap_or("You").to_string();
+                                let pl_url = pl_obj.get("permalink_url").and_then(|u| u.as_str()).unwrap_or("").to_string();
+                                let track_count = pl_obj.get("track_count").and_then(|t| t.as_u64()).unwrap_or(0) as usize;
+
+                                let mut pl_tracks = Vec::new();
+                                if let Some(arr) = pl_obj.get("tracks").and_then(|t| t.as_array()) {
+                                    for t in arr {
+                                        let tid = t.get("id").map(|i| i.to_string()).unwrap_or_default();
+                                        let title = t.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                                        let artist = t.get("user").and_then(|u| u.get("username")).and_then(|u| u.as_str()).unwrap_or(&pl_author).to_string();
+                                        let url = t.get("permalink_url").and_then(|u| u.as_str()).unwrap_or("").to_string();
+                                        let dur = t.get("duration").and_then(|d| d.as_f64()).map(|ms| ms / 1000.0).unwrap_or(0.0);
+                                        let art = t.get("artwork_url").and_then(|a| a.as_str()).map(|s| s.to_string());
+                                        let wf = t.get("waveform_url").and_then(|w| w.as_str()).map(|s| s.to_string());
+                                        if !tid.is_empty() && !title.is_empty() {
+                                            pl_tracks.push(TrackItem {
+                                                id: tid,
+                                                title,
+                                                artist,
+                                                duration: dur,
+                                                url,
+                                                stream_url: None,
+                                                artwork_url: art,
+                                                waveform_url: wf,
+                                                user_permalink: None,
+                                                user_id: None,
+                                            });
+                                        }
+                                    }
+                                }
+
+                                if !pl_id.is_empty() {
+                                    user_playlists.push(crate::storage::PlaylistItem {
+                                        id: pl_id,
+                                        title: pl_title,
+                                        author: pl_author,
+                                        track_count: if pl_tracks.is_empty() { track_count } else { pl_tracks.len() },
+                                        url: pl_url,
+                                        tracks: pl_tracks,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if liked_tracks.is_empty() && user_playlists.is_empty() {
+            SearchResult::Error("Failed to fetch library with oauth token. Check token in config.json".to_string())
+        } else {
+            SearchResult::LibraryLoaded {
+                likes: liked_tracks,
+                playlists: user_playlists,
+            }
+        }
     }
 }

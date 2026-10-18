@@ -37,6 +37,7 @@ pub fn render(f: &mut Frame, app: &App) {
         ViewMode::Favorites => render_favorites_view(f, app, chunks[2]),
         ViewMode::History => render_history_view(f, app, chunks[2]),
         ViewMode::UserProfile => render_user_profile_view(f, app, chunks[2]),
+        ViewMode::Lyrics => render_lyrics_view(f, app, chunks[2]),
         ViewMode::Settings => render_settings_view(f, app, chunks[2]),
     }
 
@@ -575,6 +576,85 @@ fn render_user_profile_view(f: &mut Frame, app: &App, area: Rect) {
     render_tracks_list(f, &profile.tracks, app.user_profile_cursor, accent, chunks[2], app);
 }
 
+fn render_lyrics_view(f: &mut Frame, app: &App, area: Rect) {
+    let accent = app.theme_accent();
+    let current_track = match app.current_track() {
+        Some(t) => t,
+        None => {
+            let empty = Paragraph::new("No track playing").alignment(Alignment::Center);
+            f.render_widget(empty, area);
+            return;
+        }
+    };
+
+    let lyrics = match &app.current_lyrics {
+        Some(l) if l.track_id == current_track.id => l,
+        _ => {
+            let loading = Paragraph::new(vec![
+                Line::from(""),
+                Line::from(Span::styled("♪ searching lyrics on LRCLIB...", Style::default().fg(Color::Rgb(100, 100, 100)))),
+                Line::from(""),
+                Line::from(Span::styled(format!("{} - {}", current_track.artist, current_track.title), Style::default().fg(Color::Rgb(60, 60, 60)))),
+            ]).alignment(Alignment::Center);
+            f.render_widget(loading, area);
+            return;
+        }
+    };
+
+    let cur_time = app.current_pos;
+    let max_lines = area.height as usize;
+    if max_lines == 0 {
+        return;
+    }
+
+    if !lyrics.lines.is_empty() {
+        // Find current synced line
+        let current_line_idx = lyrics
+            .lines
+            .iter()
+            .rposition(|line| line.time_secs <= cur_time)
+            .unwrap_or(0);
+
+        let half_screen = max_lines / 2;
+        let start_idx = current_line_idx.saturating_sub(half_screen);
+
+        let mut lines = Vec::new();
+        for (idx, line) in lyrics.lines.iter().enumerate().skip(start_idx).take(max_lines) {
+            let is_current = idx == current_line_idx;
+            if is_current {
+                lines.push(Line::from(Span::styled(
+                    format!("▶  {}", line.text),
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                )));
+            } else {
+                let diff = (idx as isize - current_line_idx as isize).abs();
+                let dim_val = match diff {
+                    1 => 130,
+                    2 => 100,
+                    3 => 70,
+                    _ => 45,
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("   {}", line.text),
+                    Style::default().fg(Color::Rgb(dim_val, dim_val, dim_val)),
+                )));
+            }
+        }
+        let p = Paragraph::new(lines).alignment(Alignment::Center);
+        f.render_widget(p, area);
+    } else if let Some(plain) = &lyrics.plain_lyrics {
+        let lines: Vec<Line> = plain.lines().take(max_lines).map(|l| Line::from(Span::styled(l, Style::default().fg(Color::Rgb(140, 140, 140))))).collect();
+        let p = Paragraph::new(lines).alignment(Alignment::Center);
+        f.render_widget(p, area);
+    } else {
+        let empty = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled("No lyrics found for this track", Style::default().fg(Color::Rgb(80, 80, 80)))),
+        ]).alignment(Alignment::Center);
+        f.render_widget(empty, area);
+    }
+}
+
 fn render_input_modal(f: &mut Frame, app: &App, input_chars: &[char], prompt: &str) {
     let size = f.area();
     let accent = app.theme_accent();
@@ -678,6 +758,9 @@ fn render_bottom_bar(f: &mut Frame, _app: &App, area: Rect) {
         Span::styled("  •  ", Style::default().fg(Color::Rgb(35, 35, 35))),
         Span::styled("u ", Style::default().fg(Color::Rgb(100, 100, 100))),
         Span::styled("artist", Style::default().fg(Color::Rgb(60, 60, 60))),
+        Span::styled("  •  ", Style::default().fg(Color::Rgb(35, 35, 35))),
+        Span::styled("y ", Style::default().fg(Color::Rgb(100, 100, 100))),
+        Span::styled("lyrics", Style::default().fg(Color::Rgb(60, 60, 60))),
         Span::styled("  •  ", Style::default().fg(Color::Rgb(35, 35, 35))),
         Span::styled("c ", Style::default().fg(Color::Rgb(100, 100, 100))),
         Span::styled("new-pl", Style::default().fg(Color::Rgb(60, 60, 60))),
