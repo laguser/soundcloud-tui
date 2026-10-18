@@ -2,3 +2,7 @@
 old_version/
 *.tmp
 *.sock
+/pkg
+/src/soundcloud-tui-git
+*.pkg.tar*
+

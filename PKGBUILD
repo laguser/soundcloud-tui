@@ -1,6 +1,6 @@
 # Maintainer: laguser <laguser@users.noreply.github.com>
 pkgname=soundcloud-tui-git
-pkgver=0.2.0.r0.ga814938
+pkgver=c9e26d1
 pkgrel=1
 pkgdesc="Minimalist terminal SoundCloud & YouTube player for Linux in Rust (@ttype aesthetic, MPRIS2, Synced Lyrics)"
 arch=('x86_64')
