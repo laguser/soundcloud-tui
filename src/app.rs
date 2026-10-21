@@ -206,17 +206,8 @@ impl App {
             self.set_status(&format!("Streaming (fast): {}", track.title));
             self.player.play(&resolved);
         } else {
-            self.set_status(&format!("Streaming: {}", track.title));
-            let play_url = if let Some(ref su) = track.stream_url {
-                if su.contains("api-v2.soundcloud.com") {
-                    track.url.clone()
-                } else {
-                    su.clone()
-                }
-            } else {
-                track.url.clone()
-            };
-            self.player.play(&play_url);
+            self.set_status(&format!("Track unavailable (DRM / Go+ required): {}", track.title));
+            return;
         }
 
         self.store.add_history(track.clone());
@@ -972,7 +963,7 @@ impl App {
                 crate::audio::PlayerEvent::Volume(v) => self.volume = v as u32,
                 crate::audio::PlayerEvent::PlaybackEnded => self.play_next(),
                 crate::audio::PlayerEvent::Idle(idle) => {
-                    if idle && self.current_track().is_some() && self.total_duration > 0.0 && self.current_pos >= (self.total_duration - 4.0).max(0.0) {
+                    if idle && self.current_track().is_some() && self.total_duration > 10.0 && self.current_pos >= (self.total_duration - 4.0).max(1.0) {
                         self.play_next();
                     }
                 }

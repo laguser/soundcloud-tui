@@ -120,7 +120,7 @@ impl AudioPlayer {
                 if let Some(event) = v.get("event").and_then(|e| e.as_str()) {
                     if event == "end-file" {
                         let reason = v.get("reason").and_then(|r| r.as_str()).unwrap_or("");
-                        if reason == "eof" || reason == "stop" {
+                        if reason == "eof" {
                             let _ = tx.send(PlayerEvent::PlaybackEnded);
                         } else if reason == "error" {
                             let err_msg = v.get("file_error").and_then(|e| e.as_str()).unwrap_or("Failed to load stream");
