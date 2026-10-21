@@ -110,7 +110,7 @@ impl AudioPlayer {
         let _ = stream_writer.flush();
 
         let reader = BufReader::new(stream);
-        for line in reader.lines().flatten() {
+        for line in reader.lines().map_while(Result::ok) {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
                 if let Some(event) = v.get("event").and_then(|e| e.as_str()) {
                     if event == "end-file" {

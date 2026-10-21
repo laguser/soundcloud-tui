@@ -102,7 +102,7 @@ impl SearchEngine {
         self.rx.try_recv().ok()
     }
 
-    pub fn choose_best_transcoding<'a>(transcodings: &'a [serde_json::Value]) -> Option<&'a str> {
+    pub fn choose_best_transcoding(transcodings: &[serde_json::Value]) -> Option<&str> {
         let score = |tr: &serde_json::Value| -> i32 {
             let snipped = tr.get("snipped").and_then(|s| s.as_bool()).unwrap_or(false);
             if snipped {
@@ -598,10 +598,8 @@ impl SearchEngine {
                             .and_then(|d| d.trim().parse::<f64>().ok())
                             .unwrap_or(0.0);
 
-                        if url.is_empty() || url == "NA" {
-                            if !id.is_empty() {
-                                url = format!("https://soundcloud.com/{}", id);
-                            }
+                        if (url.is_empty() || url == "NA") && !id.is_empty() {
+                            url = format!("https://soundcloud.com/{}", id);
                         }
 
                         if !title.is_empty() && title != "NA" {
