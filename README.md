@@ -65,11 +65,6 @@ makepkg -si
 cargo install soundcloud-tui
 ```
 
-#### Quick One-Liner (Build & Install)
-```bash
-curl -sSL https://raw.githubusercontent.com/laguser/soundcloud-tui/main/install.sh | bash
-```
-
 #### From Source
 Requires Rust (`cargo`):
 ```bash
