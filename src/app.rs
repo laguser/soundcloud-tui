@@ -207,7 +207,15 @@ impl App {
             self.player.play(&resolved);
         } else {
             self.set_status(&format!("Streaming: {}", track.title));
-            let play_url = track.stream_url.clone().unwrap_or_else(|| track.url.clone());
+            let play_url = if let Some(ref su) = track.stream_url {
+                if su.contains("api-v2.soundcloud.com") {
+                    track.url.clone()
+                } else {
+                    su.clone()
+                }
+            } else {
+                track.url.clone()
+            };
             self.player.play(&play_url);
         }
 
@@ -276,6 +284,77 @@ impl App {
         }
     }
 
+    pub fn play_selected_in_current_view(&mut self) {
+        match self.view_mode {
+            ViewMode::Search => {
+                if !self.search_results.is_empty() && self.search_cursor < self.search_results.len() {
+                    self.queue = self.search_results.clone();
+                    self.current_track_idx = Some(self.search_cursor);
+                    let track = self.queue[self.search_cursor].clone();
+                    self.play_track(track);
+                }
+            }
+            ViewMode::Queue => {
+                if !self.queue.is_empty() && self.queue_cursor < self.queue.len() {
+                    self.current_track_idx = Some(self.queue_cursor);
+                    let track = self.queue[self.queue_cursor].clone();
+                    self.play_track(track);
+                }
+            }
+            ViewMode::Playlists => {
+                if !self.store.playlists.is_empty() && self.playlists_cursor < self.store.playlists.len() {
+                    self.selected_playlist_idx = Some(self.playlists_cursor);
+                    self.playlist_detail_cursor = 0;
+                    self.view_mode = ViewMode::PlaylistDetail;
+                }
+            }
+            ViewMode::PlaylistDetail => {
+                if let Some(idx) = self.selected_playlist_idx {
+                    if let Some(pl) = self.store.playlists.get(idx) {
+                        if !pl.tracks.is_empty() && self.playlist_detail_cursor < pl.tracks.len() {
+                            self.queue = pl.tracks.clone();
+                            self.current_track_idx = Some(self.playlist_detail_cursor);
+                            let track = self.queue[self.playlist_detail_cursor].clone();
+                            self.play_track(track);
+                        }
+                    }
+                }
+            }
+            ViewMode::UserProfile => {
+                if let Some(p) = &self.current_user_profile {
+                    if !p.tracks.is_empty() && self.user_profile_cursor < p.tracks.len() {
+                        self.queue = p.tracks.clone();
+                        self.current_track_idx = Some(self.user_profile_cursor);
+                        let track = self.queue[self.user_profile_cursor].clone();
+                        self.play_track(track);
+                    }
+                }
+            }
+            ViewMode::Favorites => {
+                if !self.store.liked.is_empty() && self.favorites_cursor < self.store.liked.len() {
+                    self.queue = self.store.liked.clone();
+                    self.current_track_idx = Some(self.favorites_cursor);
+                    let track = self.queue[self.favorites_cursor].clone();
+                    self.play_track(track);
+                }
+            }
+            ViewMode::History => {
+                if !self.store.history.is_empty() && self.history_cursor < self.store.history.len() {
+                    self.queue = self.store.history.iter().map(|e| e.track.clone()).collect();
+                    self.current_track_idx = Some(self.history_cursor);
+                    let track = self.queue[self.history_cursor].clone();
+                    self.play_track(track);
+                }
+            }
+            ViewMode::Settings => {
+                self.cycle_setting();
+            }
+            ViewMode::Lyrics => {
+                self.toggle_pause();
+            }
+        }
+    }
+
     pub fn play_next(&mut self) {
         if self.queue.is_empty() {
             return;
@@ -332,6 +411,9 @@ impl App {
     }
 
     pub fn toggle_pause(&mut self) {
+        if self.current_track().is_none() {
+            return;
+        }
         self.player.toggle_pause();
         self.is_paused = !self.is_paused;
         if let Some(track) = self.current_track().cloned() {
@@ -536,7 +618,31 @@ impl App {
         // Navigation mode across screens
         match key.code {
             KeyCode::Char(' ') => {
-                self.toggle_pause();
+                let selected_track_id = match self.view_mode {
+                    ViewMode::Search => self.search_results.get(self.search_cursor).map(|t| t.id.as_str()),
+                    ViewMode::Queue => self.queue.get(self.queue_cursor).map(|t| t.id.as_str()),
+                    ViewMode::Favorites => self.store.liked.get(self.favorites_cursor).map(|t| t.id.as_str()),
+                    ViewMode::History => self.store.history.get(self.history_cursor).map(|e| e.track.id.as_str()),
+                    ViewMode::PlaylistDetail => {
+                        self.selected_playlist_idx.and_then(|idx| {
+                            self.store.playlists.get(idx).and_then(|pl| pl.tracks.get(self.playlist_detail_cursor).map(|t| t.id.as_str()))
+                        })
+                    }
+                    ViewMode::UserProfile => {
+                        self.current_user_profile.as_ref().and_then(|p| p.tracks.get(self.user_profile_cursor).map(|t| t.id.as_str()))
+                    }
+                    _ => None,
+                };
+
+                if let Some(sel_id) = selected_track_id {
+                    if let Some(cur) = self.current_track() {
+                        if cur.id == sel_id {
+                            self.toggle_pause();
+                            return;
+                        }
+                    }
+                }
+                self.play_selected_in_current_view();
             }
             KeyCode::Char('n') => {
                 self.play_next();
@@ -741,56 +847,8 @@ impl App {
                     self.seek(5.0);
                 }
             },
-            KeyCode::Enter => match self.view_mode {
-                ViewMode::Search => {
-                    if let Some(track) = self.search_results.get(self.search_cursor).cloned() {
-                        self.play_track(track);
-                    }
-                }
-                ViewMode::Queue => {
-                    if let Some(track) = self.queue.get(self.queue_cursor).cloned() {
-                        self.play_track(track);
-                    }
-                }
-                ViewMode::Playlists => {
-                    if !self.store.playlists.is_empty() && self.playlists_cursor < self.store.playlists.len() {
-                        self.selected_playlist_idx = Some(self.playlists_cursor);
-                        self.playlist_detail_cursor = 0;
-                        self.view_mode = ViewMode::PlaylistDetail;
-                    }
-                }
-                ViewMode::PlaylistDetail => {
-                    if let Some(idx) = self.selected_playlist_idx {
-                        if let Some(pl) = self.store.playlists.get(idx) {
-                            if let Some(track) = pl.tracks.get(self.playlist_detail_cursor).cloned() {
-                                self.play_track(track);
-                            }
-                        }
-                    }
-                }
-                ViewMode::UserProfile => {
-                    if let Some(p) = &self.current_user_profile {
-                        if let Some(track) = p.tracks.get(self.user_profile_cursor).cloned() {
-                            self.play_track(track);
-                        }
-                    }
-                }
-                ViewMode::Favorites => {
-                    if let Some(track) = self.store.liked.get(self.favorites_cursor).cloned() {
-                        self.play_track(track);
-                    }
-                }
-                ViewMode::History => {
-                    if let Some(entry) = self.store.history.get(self.history_cursor).cloned() {
-                        self.play_track(entry.track);
-                    }
-                }
-                ViewMode::Settings => {
-                    self.cycle_setting();
-                }
-                ViewMode::Lyrics => {
-                    self.toggle_pause();
-                }
+            KeyCode::Enter => {
+                self.play_selected_in_current_view();
             },
             KeyCode::Char('a') => {
                 // Add to queue
@@ -913,7 +971,14 @@ impl App {
                 crate::audio::PlayerEvent::Paused(p) => self.is_paused = p,
                 crate::audio::PlayerEvent::Volume(v) => self.volume = v as u32,
                 crate::audio::PlayerEvent::PlaybackEnded => self.play_next(),
-                _ => {}
+                crate::audio::PlayerEvent::Idle(idle) => {
+                    if idle && self.current_track().is_some() && self.total_duration > 0.0 && self.current_pos >= (self.total_duration - 4.0).max(0.0) {
+                        self.play_next();
+                    }
+                }
+                crate::audio::PlayerEvent::PlaybackError(err) => {
+                    self.set_status(&format!("Playback error: {}", err));
+                }
             }
         }
 

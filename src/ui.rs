@@ -61,36 +61,35 @@ fn format_duration(seconds: f64) -> String {
 
 fn render_top_bar(f: &mut Frame, app: &App, area: Rect) {
     let accent = app.theme_accent();
-    let current_view = app.view_mode.name();
+    let current_view = app.view_mode.name().to_lowercase();
     let mut spans = vec![
-        Span::styled("◈ ", Style::default().fg(accent)),
-        Span::styled(current_view, Style::default().fg(accent).add_modifier(Modifier::BOLD)),
-        Span::styled("  •  ", Style::default().fg(Color::Rgb(50, 50, 50))),
-        Span::styled(format!("{}%", app.volume), Style::default().fg(Color::Rgb(140, 140, 140))),
+        Span::styled(format!("  {} ", current_view), Style::default().fg(accent).add_modifier(Modifier::BOLD)),
+        Span::styled("· ", Style::default().fg(Color::Rgb(50, 50, 50))),
+        Span::styled(format!("vol {}% ", app.volume), Style::default().fg(Color::Rgb(110, 110, 110))),
     ];
 
     if app.shuffle {
-        spans.push(Span::styled("  •  ", Style::default().fg(Color::Rgb(50, 50, 50))));
-        spans.push(Span::styled("SHUF", Style::default().fg(accent).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled("· ", Style::default().fg(Color::Rgb(50, 50, 50))));
+        spans.push(Span::styled("shuffle ", Style::default().fg(accent)));
     }
 
     if app.repeat != crate::app::RepeatMode::Off {
-        spans.push(Span::styled("  •  ", Style::default().fg(Color::Rgb(50, 50, 50))));
+        spans.push(Span::styled("· ", Style::default().fg(Color::Rgb(50, 50, 50))));
         spans.push(Span::styled(
-            format!("REP:{}", app.repeat.name().to_uppercase()),
-            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            format!("rep:{} ", app.repeat.name().to_lowercase()),
+            Style::default().fg(accent),
         ));
     }
 
     if let Some((msg, _)) = &app.status_message {
-        spans.push(Span::styled("  •  ", Style::default().fg(Color::Rgb(50, 50, 50))));
+        spans.push(Span::styled("· ", Style::default().fg(Color::Rgb(50, 50, 50))));
         spans.push(Span::styled(
             msg.as_str(),
-            Style::default().fg(Color::Rgb(100, 100, 100)),
+            Style::default().fg(Color::Rgb(120, 120, 120)),
         ));
     }
 
-    let p = Paragraph::new(Line::from(spans)).alignment(Alignment::Center);
+    let p = Paragraph::new(Line::from(spans)).alignment(Alignment::Left);
     f.render_widget(p, area);
 }
 
@@ -199,11 +198,11 @@ fn render_tracks_list(
         let is_liked = app.store.is_liked(&track.url);
 
         let cursor_glyph = if is_selected {
-            " → "
+            "› "
         } else if is_playing {
-            " ▶ "
+            "▶ "
         } else {
-            "   "
+            "  "
         };
 
         let like_icon = if is_liked { "♥ " } else { "  " };
@@ -213,13 +212,13 @@ fn render_tracks_list(
         } else if is_playing {
             Style::default().fg(accent).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Rgb(150, 150, 150))
+            Style::default().fg(Color::Rgb(140, 140, 140))
         };
 
         let artist_style = if is_selected {
             Style::default().fg(accent)
         } else {
-            Style::default().fg(Color::Rgb(75, 75, 75))
+            Style::default().fg(Color::Rgb(70, 70, 70))
         };
 
         let dur = if track.duration > 0.0 {
@@ -229,9 +228,9 @@ fn render_tracks_list(
         };
 
         lines.push(Line::from(vec![
-            Span::styled(cursor_glyph, Style::default().fg(if is_selected { accent } else { Color::Rgb(60, 60, 60) })),
-            Span::styled(like_icon, Style::default().fg(if is_liked { Color::Red } else { Color::Rgb(40, 40, 40) })),
-            Span::styled(format!("{:<40}", truncate_str(&track.title, 38)), title_style),
+            Span::styled(format!(" {}", cursor_glyph), Style::default().fg(if is_selected { accent } else { Color::Rgb(80, 80, 80) })),
+            Span::styled(like_icon, Style::default().fg(if is_liked { Color::Rgb(220, 70, 70) } else { Color::Rgb(40, 40, 40) })),
+            Span::styled(format!("{:<42}", truncate_str(&track.title, 40)), title_style),
             Span::styled(format!(" {:<24}", truncate_str(&track.artist, 22)), artist_style),
             Span::styled(format!("{:>7}", dur), Style::default().fg(Color::Rgb(65, 65, 65))),
         ]));
@@ -747,30 +746,30 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 
 fn render_bottom_bar(f: &mut Frame, _app: &App, area: Rect) {
     let hints = vec![
-        Span::styled("space ", Style::default().fg(Color::Rgb(100, 100, 100))),
-        Span::styled("play", Style::default().fg(Color::Rgb(60, 60, 60))),
-        Span::styled("  •  ", Style::default().fg(Color::Rgb(35, 35, 35))),
-        Span::styled("s ", Style::default().fg(Color::Rgb(100, 100, 100))),
-        Span::styled("shuf", Style::default().fg(Color::Rgb(60, 60, 60))),
-        Span::styled("  •  ", Style::default().fg(Color::Rgb(35, 35, 35))),
-        Span::styled("r ", Style::default().fg(Color::Rgb(100, 100, 100))),
-        Span::styled("repeat", Style::default().fg(Color::Rgb(60, 60, 60))),
-        Span::styled("  •  ", Style::default().fg(Color::Rgb(35, 35, 35))),
-        Span::styled("u ", Style::default().fg(Color::Rgb(100, 100, 100))),
-        Span::styled("artist", Style::default().fg(Color::Rgb(60, 60, 60))),
-        Span::styled("  •  ", Style::default().fg(Color::Rgb(35, 35, 35))),
-        Span::styled("y ", Style::default().fg(Color::Rgb(100, 100, 100))),
-        Span::styled("lyrics", Style::default().fg(Color::Rgb(60, 60, 60))),
-        Span::styled("  •  ", Style::default().fg(Color::Rgb(35, 35, 35))),
-        Span::styled("c ", Style::default().fg(Color::Rgb(100, 100, 100))),
-        Span::styled("new-pl", Style::default().fg(Color::Rgb(60, 60, 60))),
-        Span::styled("  •  ", Style::default().fg(Color::Rgb(35, 35, 35))),
-        Span::styled("m ", Style::default().fg(Color::Rgb(100, 100, 100))),
-        Span::styled("add-pl", Style::default().fg(Color::Rgb(60, 60, 60))),
-        Span::styled("  •  ", Style::default().fg(Color::Rgb(35, 35, 35))),
-        Span::styled("tab ", Style::default().fg(Color::Rgb(100, 100, 100))),
-        Span::styled("views", Style::default().fg(Color::Rgb(60, 60, 60))),
+        Span::styled("  space ", Style::default().fg(Color::Rgb(120, 120, 120))),
+        Span::styled("play/pause ", Style::default().fg(Color::Rgb(70, 70, 70))),
+        Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
+        Span::styled("enter ", Style::default().fg(Color::Rgb(120, 120, 120))),
+        Span::styled("play ", Style::default().fg(Color::Rgb(70, 70, 70))),
+        Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
+        Span::styled("tab ", Style::default().fg(Color::Rgb(120, 120, 120))),
+        Span::styled("views ", Style::default().fg(Color::Rgb(70, 70, 70))),
+        Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
+        Span::styled("a ", Style::default().fg(Color::Rgb(120, 120, 120))),
+        Span::styled("queue ", Style::default().fg(Color::Rgb(70, 70, 70))),
+        Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
+        Span::styled("s ", Style::default().fg(Color::Rgb(120, 120, 120))),
+        Span::styled("shuf ", Style::default().fg(Color::Rgb(70, 70, 70))),
+        Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
+        Span::styled("r ", Style::default().fg(Color::Rgb(120, 120, 120))),
+        Span::styled("repeat ", Style::default().fg(Color::Rgb(70, 70, 70))),
+        Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
+        Span::styled("y ", Style::default().fg(Color::Rgb(120, 120, 120))),
+        Span::styled("lyrics ", Style::default().fg(Color::Rgb(70, 70, 70))),
+        Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
+        Span::styled("q ", Style::default().fg(Color::Rgb(120, 120, 120))),
+        Span::styled("quit", Style::default().fg(Color::Rgb(70, 70, 70))),
     ];
-    let p = Paragraph::new(Line::from(hints)).alignment(Alignment::Center);
+    let p = Paragraph::new(Line::from(hints)).alignment(Alignment::Left);
     f.render_widget(p, area);
 }

@@ -16,6 +16,7 @@ pub enum PlayerEvent {
     Idle(bool),
     Volume(f64),
     PlaybackEnded,
+    PlaybackError(String),
 }
 
 pub struct AudioPlayer {
@@ -37,7 +38,7 @@ impl AudioPlayer {
         let (tx, rx) = channel();
         let is_running = Arc::new(AtomicBool::new(false));
 
-        // Start mpv in idle background mode with lossless audiophile streaming & IPC (completely headless)
+        // Start mpv in idle background mode with lossless streaming & IPC (completely headless)
         let process = Command::new("mpv")
             .arg("--idle=yes")
             .arg("--no-video")
@@ -45,9 +46,8 @@ impl AudioPlayer {
             .arg("--vo=null")
             .arg("--msg-level=all=no")
             .arg("--ytdl-format=bestaudio/best")
-            .arg("--user-agent=Mozilla/5.0 (X11; Linux x86_64)")
+            .arg("--user-agent=Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
             .arg("--hls-bitrate=max")
-            .arg("--audio-format=float")
             .arg("--audio-pitch-correction=no")
             .arg("--demuxer-readahead-secs=15")
             .arg("--audio-buffer=0.5")
@@ -115,8 +115,11 @@ impl AudioPlayer {
                 if let Some(event) = v.get("event").and_then(|e| e.as_str()) {
                     if event == "end-file" {
                         let reason = v.get("reason").and_then(|r| r.as_str()).unwrap_or("");
-                        if reason == "eof" {
+                        if reason == "eof" || reason == "stop" {
                             let _ = tx.send(PlayerEvent::PlaybackEnded);
+                        } else if reason == "error" {
+                            let err_msg = v.get("file_error").and_then(|e| e.as_str()).unwrap_or("Failed to load stream");
+                            let _ = tx.send(PlayerEvent::PlaybackError(err_msg.to_string()));
                         }
                     }
                 }
@@ -165,6 +168,7 @@ impl AudioPlayer {
     pub fn play(&self, url: &str) {
         let msg = format!(r#"{{"command": ["loadfile", "{}", "replace"]}}"#, url);
         self.send_command(&msg);
+        self.send_command(r#"{"command": ["set_property", "pause", false]}"#);
     }
 
     pub fn toggle_pause(&self) {
