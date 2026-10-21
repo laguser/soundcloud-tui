@@ -185,13 +185,15 @@ impl SearchEngine {
             guard.clone().unwrap_or_else(|| "QhVEWrrJKvW4uSU5u5EoI0FTXYUGzy5k".to_string())
         };
 
-        // Try primary cid followed by known working rotating fallbacks
-        let candidate_cids = [
-            initial_cid.as_str(),
-            "QhVEWrrJKvW4uSU5u5EoI0FTXYUGzy5k",
-            "tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ",
-            "a3e059563d7fd3372b49b37f00a00bcf",
-        ];
+        // Try primary cid followed by verified working rotating fallback
+        let mut candidate_cids = Vec::with_capacity(3);
+        candidate_cids.push(initial_cid.as_str());
+        if !candidate_cids.contains(&"QhVEWrrJKvW4uSU5u5EoI0FTXYUGzy5k") {
+            candidate_cids.push("QhVEWrrJKvW4uSU5u5EoI0FTXYUGzy5k");
+        }
+        if !candidate_cids.contains(&"tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ") {
+            candidate_cids.push("tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ");
+        }
 
         let make_playable = |raw_url: &str| -> String {
             if (raw_url.contains("stream/hls") || raw_url.contains("playlist") || raw_url.contains("hls")) && !raw_url.contains(".m3u8") {
@@ -213,7 +215,7 @@ impl SearchEngine {
             let stream_res = Command::new("curl")
                 .arg("-s")
                 .arg("-m")
-                .arg("6")
+                .arg("3")
                 .arg("-H")
                 .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
                 .arg(&stream_lookup)
@@ -271,7 +273,7 @@ impl SearchEngine {
                 let output = Command::new("curl")
                     .arg("-s")
                     .arg("-m")
-                    .arg("6")
+                    .arg("3")
                     .arg("-H")
                     .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
                     .arg(&api_url)
@@ -312,7 +314,7 @@ impl SearchEngine {
                 let output = Command::new("curl")
                     .arg("-s")
                     .arg("-m")
-                    .arg("6")
+                    .arg("3")
                     .arg("-H")
                     .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
                     .arg(&resolve_url)

@@ -51,6 +51,19 @@ impl ViewMode {
     }
 }
 
+#[derive(Debug)]
+pub enum StreamResolveEvent {
+    Resolved {
+        track_id: String,
+        url: String,
+        source: &'static str,
+    },
+    Failed {
+        track_id: String,
+        title: String,
+    },
+}
+
 pub struct App {
     pub view_mode: ViewMode,
     pub query_chars: Vec<char>,
@@ -104,6 +117,9 @@ pub struct App {
     pub current_waveform: Vec<u8>,
     pub loaded_waveform_track_id: Option<String>,
 
+    pub stream_resolve_tx: std::sync::mpsc::Sender<StreamResolveEvent>,
+    pub stream_resolve_rx: std::sync::mpsc::Receiver<StreamResolveEvent>,
+
     pub status_message: Option<(String, Instant)>,
     pub last_esc_press: Option<Instant>,
     pub last_rpc_update: Option<Instant>,
@@ -118,6 +134,7 @@ impl App {
         let discord = crate::discord::DiscordRpc::new(store.config.discord_client_id.clone());
         let mpris = crate::mpris::MprisManager::new();
         let lyrics_manager = crate::lyrics::LyricsManager::new();
+        let (stream_resolve_tx, stream_resolve_rx) = std::sync::mpsc::channel();
 
         Self {
             view_mode: ViewMode::Search,
@@ -155,6 +172,9 @@ impl App {
             lyrics_manager,
             current_lyrics: None,
             store,
+
+            stream_resolve_tx,
+            stream_resolve_rx,
 
             is_paused: false,
             current_pos: 0.0,
@@ -197,22 +217,6 @@ impl App {
     }
 
     pub fn play_track(&mut self, track: TrackItem) {
-        // 1. Check local on-disk cache
-        if let Some(cached_file) = crate::storage::DataStore::get_cached_track_path(&track.id) {
-            let path_str = cached_file.to_string_lossy().to_string();
-            self.set_status(&format!("Playing (cached): {}", track.title));
-            self.player.play(&path_str);
-        } else if let Some(resolved) = crate::search::SearchEngine::resolve_stream_url(&track, &self.search_engine.cached_client_id) {
-            self.set_status(&format!("Streaming: {}", track.title));
-            self.player.play(&resolved);
-        } else if !track.url.is_empty() && track.url.starts_with("http") {
-            self.set_status(&format!("Streaming: {}", track.title));
-            self.player.play(&track.url);
-        } else {
-            self.set_status(&format!("Track unavailable: {}", track.title));
-            return;
-        }
-
         self.store.add_history(track.clone());
 
         // Put in queue if not present or select it
@@ -227,7 +231,7 @@ impl App {
         self.total_duration = track.duration;
         self.prefetched_track_id = None;
 
-        // Update MPRIS2 for Caelestia Shell and system media keys
+        // Update MPRIS2 for Caelestia Shell and system media keys immediately
         self.mpris.update(
             &track.title,
             &track.artist,
@@ -242,6 +246,40 @@ impl App {
 
         // Fetch waveform if available
         self.fetch_waveform_for_track(&track);
+
+        // 1. Check local on-disk cache (instant 0ms playback)
+        if let Some(cached_file) = crate::storage::DataStore::get_cached_track_path(&track.id) {
+            let path_str = cached_file.to_string_lossy().to_string();
+            self.set_status(&format!("Playing (cached): {}", track.title));
+            self.player.play(&path_str);
+            return;
+        }
+
+        // 2. Resolve network stream asynchronously in background (UI never freezes!)
+        self.set_status(&format!("Loading: {}", track.title));
+        let tx = self.stream_resolve_tx.clone();
+        let cid_holder = std::sync::Arc::clone(&self.search_engine.cached_client_id);
+        let track_clone = track.clone();
+        std::thread::spawn(move || {
+            if let Some(resolved) = crate::search::SearchEngine::resolve_stream_url(&track_clone, &cid_holder) {
+                let _ = tx.send(StreamResolveEvent::Resolved {
+                    track_id: track_clone.id,
+                    url: resolved,
+                    source: "direct",
+                });
+            } else if !track_clone.url.is_empty() && track_clone.url.starts_with("http") {
+                let _ = tx.send(StreamResolveEvent::Resolved {
+                    track_id: track_clone.id,
+                    url: track_clone.url,
+                    source: "ytdl",
+                });
+            } else {
+                let _ = tx.send(StreamResolveEvent::Failed {
+                    track_id: track_clone.id,
+                    title: track_clone.title,
+                });
+            }
+        });
     }
 
     fn fetch_waveform_for_track(&mut self, track: &TrackItem) {
@@ -957,6 +995,26 @@ impl App {
     }
 
     pub fn poll_async_events(&mut self) {
+        // Asynchronous stream resolution events
+        while let Ok(res) = self.stream_resolve_rx.try_recv() {
+            match res {
+                StreamResolveEvent::Resolved { track_id, url, source } => {
+                    // Only apply if this is still the active track
+                    if self.current_track().map(|t| t.id == track_id).unwrap_or(false) {
+                        self.player.play(&url);
+                        let title = self.current_track().map(|t| t.title.as_str()).unwrap_or("");
+                        let label = if source == "direct" { "Streaming" } else { "Streaming (ytdl)" };
+                        self.set_status(&format!("{}: {}", label, title));
+                    }
+                }
+                StreamResolveEvent::Failed { track_id, title } => {
+                    if self.current_track().map(|t| t.id == track_id).unwrap_or(false) {
+                        self.set_status(&format!("Track unavailable: {}", title));
+                    }
+                }
+            }
+        }
+
         // Audio events
         while let Some(ev) = self.player.poll_event() {
             match ev {
