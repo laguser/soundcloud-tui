@@ -113,26 +113,19 @@ impl SearchEngine {
             let quality = tr.get("quality").and_then(|q| q.as_str()).unwrap_or("");
 
             let mut pts = 0;
-            // Highest quality codec presets
-            if preset.contains("original") || preset.contains("flac") || preset.contains("wav") || preset.contains("lossless") {
-                pts += 1000;
-            } else if preset.contains("aac_256") || preset.contains("256") {
-                pts += 500;
-            } else if preset.contains("aac_160") || preset.contains("160") {
-                pts += 400;
-            } else if preset.contains("abr_sq") || preset.contains("128") || preset.contains("mp3_1_0") || quality == "sq" {
-                pts += 250;
-            } else if preset.contains("96") || quality == "lq" {
-                pts += 100;
+            // Progressive MP3 is the most reliable, instant seeking, zero manifest errors
+            if proto == "progressive" {
+                pts += 600;
+            } else if proto == "hls" {
+                pts += 200;
             }
 
-            // Protocol compatibility & instant seek:
-            if proto == "progressive" {
-                pts += 15;
-            } else if proto == "hls" {
-                pts += 10;
-            } else if proto.contains("encrypted") {
-                pts += 2;
+            if preset.contains("original") || preset.contains("flac") || preset.contains("lossless") {
+                pts += 300;
+            } else if preset.contains("aac") || preset.contains("256") || preset.contains("160") {
+                pts += 200;
+            } else if preset.contains("mp3") || quality == "sq" {
+                pts += 150;
             }
             pts
         };
@@ -149,87 +142,118 @@ impl SearchEngine {
             return Some(cached_file.to_string_lossy().to_string());
         }
 
-        let cid = {
+        let initial_cid = {
             let guard = client_id_holder.lock().unwrap();
-            guard.clone().unwrap_or_else(|| "tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ".to_string())
+            guard.clone().unwrap_or_else(|| "QhVEWrrJKvW4uSU5u5EoI0FTXYUGzy5k".to_string())
         };
 
-        // If stream_url already contains transcoding endpoint, query direct stream URL in 1 jump!
-        if let Some(trans_url) = &track.stream_url {
-            if trans_url.contains("api-v2.soundcloud.com/media") {
-                let stream_lookup = format!("{}?client_id={}", trans_url, cid);
-                let stream_res = Command::new("curl")
-                    .arg("-s")
-                    .arg("-m")
-                    .arg("3")
-                    .arg("-H")
-                    .arg("User-Agent: Mozilla/5.0")
-                    .arg(&stream_lookup)
-                    .output()
-                    .ok();
+        // Try primary cid followed by known working rotating fallbacks
+        let candidate_cids = [
+            initial_cid.as_str(),
+            "QhVEWrrJKvW4uSU5u5EoI0FTXYUGzy5k",
+            "tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ",
+            "a3e059563d7fd3372b49b37f00a00bcf",
+        ];
 
-                if let Some(s_out) = stream_res {
-                    if s_out.status.success() {
-                        if let Ok(sv) = serde_json::from_slice::<serde_json::Value>(&s_out.stdout) {
-                            if let Some(direct_url) = sv.get("url").and_then(|u| u.as_str()) {
-                                return Some(direct_url.to_string());
+        let make_playable = |raw_url: &str| -> String {
+            if (raw_url.contains("stream/hls") || raw_url.contains("playlist") || raw_url.contains("hls")) && !raw_url.contains(".m3u8") {
+                format!("{}#dummy.m3u8", raw_url)
+            } else {
+                raw_url.to_string()
+            }
+        };
+
+        for cid in candidate_cids {
+            // If stream_url already contains transcoding endpoint, query direct stream URL in 1 jump!
+            if let Some(trans_url) = &track.stream_url {
+                if trans_url.contains("api-v2.soundcloud.com/media") {
+                    let sep = if trans_url.contains('?') { "&" } else { "?" };
+                    let stream_lookup = format!("{}{sep}client_id={}", trans_url, cid);
+                    let stream_res = Command::new("curl")
+                        .arg("-s")
+                        .arg("-m")
+                        .arg("8")
+                        .arg("-H")
+                        .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
+                        .arg(&stream_lookup)
+                        .output()
+                        .ok();
+
+                    if let Some(s_out) = stream_res {
+                        if s_out.status.success() {
+                            if let Ok(sv) = serde_json::from_slice::<serde_json::Value>(&s_out.stdout) {
+                                if let Some(direct_url) = sv.get("url").and_then(|u| u.as_str()) {
+                                    if let Ok(mut g) = client_id_holder.lock() {
+                                        *g = Some(cid.to_string());
+                                    }
+                                    let playable = make_playable(direct_url);
+                                    let track_id_clean = track.id.clone();
+                                    let stream_copy = playable.clone();
+                                    thread::spawn(move || {
+                                        Self::download_to_cache(&track_id_clean, &stream_copy);
+                                    });
+                                    return Some(playable);
+                                }
                             }
                         }
                     }
+                } else if trans_url.starts_with("http") {
+                    return Some(make_playable(trans_url));
                 }
-            } else if trans_url.starts_with("http") {
-                return Some(trans_url.clone());
             }
-        }
 
-        // Try direct transcodings lookup via curl
-        let api_url = format!(
-            "https://api-v2.soundcloud.com/tracks/{}?client_id={}",
-            track.id, cid
-        );
+            // Try direct transcodings lookup via curl
+            let api_url = format!(
+                "https://api-v2.soundcloud.com/tracks/{}?client_id={}",
+                track.id, cid
+            );
 
-        let output = Command::new("curl")
-            .arg("-s")
-            .arg("-m")
-            .arg("4")
-            .arg("-H")
-            .arg("User-Agent: Mozilla/5.0")
-            .arg(&api_url)
-            .output()
-            .ok()?;
+            let output = Command::new("curl")
+                .arg("-s")
+                .arg("-m")
+                .arg("8")
+                .arg("-H")
+                .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
+                .arg(&api_url)
+                .output()
+                .ok();
 
-        if output.status.success() {
-            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
-                if let Some(transcodings) = v.get("media").and_then(|m| m.get("transcodings")).and_then(|t| t.as_array()) {
-                    let chosen_url = Self::choose_best_transcoding(transcodings)
-                        .or_else(|| transcodings.first().and_then(|t| t.get("url")).and_then(|u| u.as_str()));
+            if let Some(out) = output {
+                if out.status.success() {
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                        if let Some(transcodings) = v.get("media").and_then(|m| m.get("transcodings")).and_then(|t| t.as_array()) {
+                            let chosen_url = Self::choose_best_transcoding(transcodings)
+                                .or_else(|| transcodings.first().and_then(|t| t.get("url")).and_then(|u| u.as_str()));
 
-                    if let Some(tr_url) = chosen_url {
-                        let stream_lookup = format!("{}?client_id={}", tr_url, cid);
-                        let stream_res = Command::new("curl")
-                            .arg("-s")
-                            .arg("-m")
-                            .arg("3")
-                            .arg("-H")
-                            .arg("User-Agent: Mozilla/5.0")
-                            .arg(&stream_lookup)
-                            .output()
-                            .ok();
+                            if let Some(tr_url) = chosen_url {
+                                let sep = if tr_url.contains('?') { "&" } else { "?" };
+                                let stream_lookup = format!("{}{sep}client_id={}", tr_url, cid);
+                                let stream_res = Command::new("curl")
+                                    .arg("-s")
+                                    .arg("-m")
+                                    .arg("8")
+                                    .arg("-H")
+                                    .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
+                                    .arg(&stream_lookup)
+                                    .output()
+                                    .ok();
 
-                        if let Some(s_out) = stream_res {
-                            if s_out.status.success() {
-                                if let Ok(sv) = serde_json::from_slice::<serde_json::Value>(&s_out.stdout) {
-                                    if let Some(direct_url) = sv.get("url").and_then(|u| u.as_str()) {
-                                        let resolved = direct_url.to_string();
-
-                                        // Spawn background cache downloader
-                                        let track_id_clean = track.id.clone();
-                                        let stream_copy = resolved.clone();
-                                        thread::spawn(move || {
-                                            Self::download_to_cache(&track_id_clean, &stream_copy);
-                                        });
-
-                                        return Some(resolved);
+                                if let Some(s_out) = stream_res {
+                                    if s_out.status.success() {
+                                        if let Ok(sv) = serde_json::from_slice::<serde_json::Value>(&s_out.stdout) {
+                                            if let Some(direct_url) = sv.get("url").and_then(|u| u.as_str()) {
+                                                if let Ok(mut g) = client_id_holder.lock() {
+                                                    *g = Some(cid.to_string());
+                                                }
+                                                let playable = make_playable(direct_url);
+                                                let track_id_clean = track.id.clone();
+                                                let stream_copy = playable.clone();
+                                                thread::spawn(move || {
+                                                    Self::download_to_cache(&track_id_clean, &stream_copy);
+                                                });
+                                                return Some(playable);
+                                            }
+                                        }
                                     }
                                 }
                             }
