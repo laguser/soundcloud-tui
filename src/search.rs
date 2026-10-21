@@ -102,63 +102,76 @@ impl SearchEngine {
         self.rx.try_recv().ok()
     }
 
-    pub fn choose_best_transcoding(transcodings: &[serde_json::Value]) -> Option<&str> {
-        let score = |tr: &serde_json::Value| -> i32 {
-            let url = tr.get("url").and_then(|u| u.as_str()).unwrap_or("");
-            let preset = tr.get("preset").and_then(|p| p.as_str()).unwrap_or("");
-            let proto = tr.get("format").and_then(|f| f.get("protocol")).and_then(|p| p.as_str()).unwrap_or("");
-            let quality = tr.get("quality").and_then(|q| q.as_str()).unwrap_or("");
-            let mime = tr.get("format").and_then(|f| f.get("mime_type")).and_then(|m| m.as_str()).unwrap_or("");
-            let snipped = tr.get("snipped").and_then(|s| s.as_bool()).unwrap_or(false);
+    pub fn score_transcoding(tr: &serde_json::Value) -> i32 {
+        let url = tr.get("url").and_then(|u| u.as_str()).unwrap_or("");
+        let preset = tr.get("preset").and_then(|p| p.as_str()).unwrap_or("");
+        let proto = tr.get("format").and_then(|f| f.get("protocol")).and_then(|p| p.as_str()).unwrap_or("");
+        let quality = tr.get("quality").and_then(|q| q.as_str()).unwrap_or("");
+        let mime = tr.get("format").and_then(|f| f.get("mime_type")).and_then(|m| m.as_str()).unwrap_or("");
+        let snipped = tr.get("snipped").and_then(|s| s.as_bool()).unwrap_or(false);
 
-            // Completely reject DRM / CENC / PlayReady / Widevine / encrypted streams
-            if snipped
-                || url.contains("/cenc/")
-                || url.contains("cenc")
-                || preset.contains("cenc")
-                || preset.contains("drm")
-                || proto.contains("cenc")
-                || proto.contains("encrypted")
-                || mime.contains("cenc")
-                || mime.contains("drm")
-            {
-                return -10000;
-            }
+        // Completely reject DRM / CENC / PlayReady / Widevine / encrypted streams
+        if snipped
+            || url.contains("/cenc/")
+            || url.contains("cenc")
+            || preset.contains("cenc")
+            || preset.contains("drm")
+            || proto.contains("cenc")
+            || proto.contains("encrypted")
+            || mime.contains("cenc")
+            || mime.contains("drm")
+        {
+            return -10000;
+        }
 
-            let mut pts = 0;
-            // Progressive MP3 is the most reliable, unencrypted, instant seeking
-            if proto == "progressive" {
-                pts += 1000;
-            } else if proto == "hls" {
-                pts += 200;
-            }
+        let mut pts = 0;
+        // Progressive MP3 is fast, seeking without re-requesting manifests
+        if proto == "progressive" {
+            pts += 1000;
+        } else if proto == "hls" {
+            pts += 200;
+        }
 
-            if preset.contains("mp3") || quality == "sq" {
-                pts += 500;
-            } else if preset.contains("opus") {
-                pts += 300;
-            } else if preset.contains("aac") && !preset.contains("cenc") {
-                pts += 100;
-            }
-            pts
-        };
+        // Preset scoring: AAC 160k is highest quality unencrypted stream
+        if preset.contains("aac_160") || preset.contains("160k") {
+            pts += 700;
+        } else if preset.contains("opus") {
+            pts += 600;
+        } else if preset.contains("mp3") {
+            pts += 500;
+        } else if preset.contains("aac_96") || preset.contains("96k") {
+            pts += 400;
+        } else if preset.contains("aac") {
+            pts += 300;
+        }
 
-        transcodings
+        if quality == "sq" {
+            pts += 150;
+        }
+
+        // abr_sq is legacy mpegurl which frequently returns 404 from SoundCloud CDN
+        if preset.contains("abr") || mime.contains("mpegurl") {
+            pts -= 250;
+        }
+
+        pts
+    }
+
+    pub fn get_ordered_transcodings<'a>(transcodings: &'a [serde_json::Value]) -> Vec<&'a str> {
+        let mut scored: Vec<(&'a serde_json::Value, i32)> = transcodings
             .iter()
-            .filter(|tr| score(tr) > 0)
-            .max_by_key(|tr| score(tr))
-            .and_then(|tr| tr.get("url").and_then(|u| u.as_str()))
-            .or_else(|| {
-                transcodings
-                    .iter()
-                    .find(|tr| {
-                        let u = tr.get("url").and_then(|u| u.as_str()).unwrap_or("");
-                        let p = tr.get("preset").and_then(|p| p.as_str()).unwrap_or("");
-                        let pr = tr.get("format").and_then(|f| f.get("protocol")).and_then(|p| p.as_str()).unwrap_or("");
-                        !u.contains("cenc") && !p.contains("cenc") && !pr.contains("encrypted")
-                    })
-                    .and_then(|tr| tr.get("url").and_then(|u| u.as_str()))
-            })
+            .map(|tr| (tr, Self::score_transcoding(tr)))
+            .filter(|(_, s)| *s > 0)
+            .collect();
+        scored.sort_by_key(|a| std::cmp::Reverse(a.1));
+        scored
+            .into_iter()
+            .filter_map(|(tr, _)| tr.get("url").and_then(|u| u.as_str()))
+            .collect()
+    }
+
+    pub fn choose_best_transcoding(transcodings: &[serde_json::Value]) -> Option<&str> {
+        Self::get_ordered_transcodings(transcodings).first().copied()
     }
 
     pub fn resolve_stream_url(track: &TrackItem, client_id_holder: &Arc<Mutex<Option<String>>>) -> Option<String> {
@@ -188,8 +201,39 @@ impl SearchEngine {
             }
         };
 
+        let try_resolve = |trans_url: &str, cid: &str, auth: Option<&str>| -> Option<String> {
+            let sep = if trans_url.contains('?') { "&" } else { "?" };
+            let mut stream_lookup = format!("{}{sep}client_id={}", trans_url, cid);
+            if let Some(a) = auth {
+                if !a.is_empty() {
+                    stream_lookup.push_str("&track_authorization=");
+                    stream_lookup.push_str(a);
+                }
+            }
+            let stream_res = Command::new("curl")
+                .arg("-s")
+                .arg("-m")
+                .arg("6")
+                .arg("-H")
+                .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
+                .arg(&stream_lookup)
+                .output()
+                .ok()?;
+
+            if stream_res.status.success() {
+                if let Ok(sv) = serde_json::from_slice::<serde_json::Value>(&stream_res.stdout) {
+                    if let Some(direct_url) = sv.get("url").and_then(|u| u.as_str()) {
+                        if !direct_url.contains("cenc") && !direct_url.contains("drm") {
+                            return Some(make_playable(direct_url));
+                        }
+                    }
+                }
+            }
+            None
+        };
+
         for cid in candidate_cids {
-            // Only use saved stream_url if it is an unencrypted transcoding endpoint!
+            // 1. Try saved stream_url if present
             let has_valid_unencrypted_trans = track.stream_url.as_ref().map(|u| {
                 u.contains("api-v2.soundcloud.com/media")
                     && !u.contains("cbc")
@@ -200,37 +244,16 @@ impl SearchEngine {
 
             if has_valid_unencrypted_trans {
                 let trans_url = track.stream_url.as_ref().unwrap();
-                let sep = if trans_url.contains('?') { "&" } else { "?" };
-                let stream_lookup = format!("{}{sep}client_id={}", trans_url, cid);
-                let stream_res = Command::new("curl")
-                    .arg("-s")
-                    .arg("-m")
-                    .arg("8")
-                    .arg("-H")
-                    .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
-                    .arg(&stream_lookup)
-                    .output()
-                    .ok();
-
-                if let Some(s_out) = stream_res {
-                    if s_out.status.success() {
-                        if let Ok(sv) = serde_json::from_slice::<serde_json::Value>(&s_out.stdout) {
-                            if let Some(direct_url) = sv.get("url").and_then(|u| u.as_str()) {
-                                if !direct_url.contains("cenc") && !direct_url.contains("drm") {
-                                    if let Ok(mut g) = client_id_holder.lock() {
-                                        *g = Some(cid.to_string());
-                                    }
-                                    let playable = make_playable(direct_url);
-                                    let track_id_clean = track.id.clone();
-                                    let stream_copy = playable.clone();
-                                    thread::spawn(move || {
-                                        Self::download_to_cache(&track_id_clean, &stream_copy);
-                                    });
-                                    return Some(playable);
-                                }
-                            }
-                        }
+                if let Some(playable) = try_resolve(trans_url, cid, None) {
+                    if let Ok(mut g) = client_id_holder.lock() {
+                        *g = Some(cid.to_string());
                     }
+                    let track_id_clean = track.id.clone();
+                    let stream_copy = playable.clone();
+                    thread::spawn(move || {
+                        Self::download_to_cache(&track_id_clean, &stream_copy);
+                    });
+                    return Some(playable);
                 }
             } else if let Some(trans_url) = &track.stream_url {
                 if trans_url.starts_with("http") && !trans_url.contains("api-v2.soundcloud.com") && !trans_url.contains("cenc") && !trans_url.contains("encrypted") {
@@ -238,7 +261,7 @@ impl SearchEngine {
                 }
             }
 
-            // Fresh transcodings lookup via track ID (handles history, bookmarks, and rotated endpoints)
+            // 2. Fresh track lookup via track ID (handles history, bookmarks, stale hashes, abr_sq fallbacks)
             if !track.id.is_empty() {
                 let api_url = format!(
                     "https://api-v2.soundcloud.com/tracks/{}?client_id={}",
@@ -248,7 +271,7 @@ impl SearchEngine {
                 let output = Command::new("curl")
                     .arg("-s")
                     .arg("-m")
-                    .arg("8")
+                    .arg("6")
                     .arg("-H")
                     .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
                     .arg(&api_url)
@@ -258,39 +281,61 @@ impl SearchEngine {
                 if let Some(out) = output {
                     if out.status.success() {
                         if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                            let auth = v.get("track_authorization").and_then(|a| a.as_str());
                             if let Some(transcodings) = v.get("media").and_then(|m| m.get("transcodings")).and_then(|t| t.as_array()) {
-                                if let Some(tr_url) = Self::choose_best_transcoding(transcodings) {
-                                    let sep = if tr_url.contains('?') { "&" } else { "?" };
-                                    let stream_lookup = format!("{}{sep}client_id={}", tr_url, cid);
-                                    let stream_res = Command::new("curl")
-                                        .arg("-s")
-                                        .arg("-m")
-                                        .arg("8")
-                                        .arg("-H")
-                                        .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
-                                        .arg(&stream_lookup)
-                                        .output()
-                                        .ok();
-
-                                    if let Some(s_out) = stream_res {
-                                        if s_out.status.success() {
-                                            if let Ok(sv) = serde_json::from_slice::<serde_json::Value>(&s_out.stdout) {
-                                                if let Some(direct_url) = sv.get("url").and_then(|u| u.as_str()) {
-                                                    if !direct_url.contains("cenc") && !direct_url.contains("drm") {
-                                                        if let Ok(mut g) = client_id_holder.lock() {
-                                                            *g = Some(cid.to_string());
-                                                        }
-                                                        let playable = make_playable(direct_url);
-                                                        let track_id_clean = track.id.clone();
-                                                        let stream_copy = playable.clone();
-                                                        thread::spawn(move || {
-                                                            Self::download_to_cache(&track_id_clean, &stream_copy);
-                                                        });
-                                                        return Some(playable);
-                                                    }
-                                                }
-                                            }
+                                let ordered = Self::get_ordered_transcodings(transcodings);
+                                for tr_url in ordered {
+                                    if let Some(playable) = try_resolve(tr_url, cid, auth) {
+                                        if let Ok(mut g) = client_id_holder.lock() {
+                                            *g = Some(cid.to_string());
                                         }
+                                        let track_id_clean = track.id.clone();
+                                        let stream_copy = playable.clone();
+                                        thread::spawn(move || {
+                                            Self::download_to_cache(&track_id_clean, &stream_copy);
+                                        });
+                                        return Some(playable);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3. Fallback to /resolve?url={track.url}&client_id={cid}
+            if !track.url.is_empty() && track.url.starts_with("http") {
+                let resolve_url = format!(
+                    "https://api-v2.soundcloud.com/resolve?url={}&client_id={}",
+                    track.url, cid
+                );
+                let output = Command::new("curl")
+                    .arg("-s")
+                    .arg("-m")
+                    .arg("6")
+                    .arg("-H")
+                    .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
+                    .arg(&resolve_url)
+                    .output()
+                    .ok();
+
+                if let Some(out) = output {
+                    if out.status.success() {
+                        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                            let auth = v.get("track_authorization").and_then(|a| a.as_str());
+                            if let Some(transcodings) = v.get("media").and_then(|m| m.get("transcodings")).and_then(|t| t.as_array()) {
+                                let ordered = Self::get_ordered_transcodings(transcodings);
+                                for tr_url in ordered {
+                                    if let Some(playable) = try_resolve(tr_url, cid, auth) {
+                                        if let Ok(mut g) = client_id_holder.lock() {
+                                            *g = Some(cid.to_string());
+                                        }
+                                        let track_id_clean = track.id.clone();
+                                        let stream_copy = playable.clone();
+                                        thread::spawn(move || {
+                                            Self::download_to_cache(&track_id_clean, &stream_copy);
+                                        });
+                                        return Some(playable);
                                     }
                                 }
                             }
@@ -1068,5 +1113,56 @@ impl SearchEngine {
                 playlists: user_playlists,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_transcoding_priority() {
+        let trans = serde_json::json!([
+            {
+                "url": "https://api-v2.soundcloud.com/media/1/aac_160/stream/hls",
+                "preset": "aac_160k",
+                "format": { "protocol": "hls", "mime_type": "audio/mp4" },
+                "quality": "sq",
+                "snipped": false
+            },
+            {
+                "url": "https://api-v2.soundcloud.com/media/2/aac_96/stream/hls",
+                "preset": "aac_96k",
+                "format": { "protocol": "hls", "mime_type": "audio/mp4" },
+                "quality": "lq",
+                "snipped": false
+            },
+            {
+                "url": "https://api-v2.soundcloud.com/media/3/abr_sq/stream/hls",
+                "preset": "abr_sq",
+                "format": { "protocol": "hls", "mime_type": "audio/mpegurl" },
+                "quality": "sq",
+                "snipped": false
+            },
+            {
+                "url": "https://api-v2.soundcloud.com/media/4/cenc/stream/hls",
+                "preset": "aac_160k_cenc",
+                "format": { "protocol": "hls", "mime_type": "audio/mp4" },
+                "quality": "sq",
+                "snipped": false
+            }
+        ]);
+
+        let trans_arr = trans.as_array().unwrap();
+        let best = SearchEngine::choose_best_transcoding(trans_arr);
+        assert_eq!(best, Some("https://api-v2.soundcloud.com/media/1/aac_160/stream/hls"));
+
+        let ordered = SearchEngine::get_ordered_transcodings(trans_arr);
+        assert_eq!(ordered.len(), 3);
+        assert_eq!(ordered[0], "https://api-v2.soundcloud.com/media/1/aac_160/stream/hls");
+        assert_eq!(ordered[1], "https://api-v2.soundcloud.com/media/2/aac_96/stream/hls");
+        assert_eq!(ordered[2], "https://api-v2.soundcloud.com/media/3/abr_sq/stream/hls");
+        // cenc was completely rejected
+        assert!(!ordered.iter().any(|u| u.contains("cenc")));
     }
 }

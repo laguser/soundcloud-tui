@@ -203,10 +203,13 @@ impl App {
             self.set_status(&format!("Playing (cached): {}", track.title));
             self.player.play(&path_str);
         } else if let Some(resolved) = crate::search::SearchEngine::resolve_stream_url(&track, &self.search_engine.cached_client_id) {
-            self.set_status(&format!("Streaming (fast): {}", track.title));
+            self.set_status(&format!("Streaming: {}", track.title));
             self.player.play(&resolved);
+        } else if !track.url.is_empty() && track.url.starts_with("http") {
+            self.set_status(&format!("Streaming: {}", track.title));
+            self.player.play(&track.url);
         } else {
-            self.set_status(&format!("Track unavailable (DRM / Go+ required): {}", track.title));
+            self.set_status(&format!("Track unavailable: {}", track.title));
             return;
         }
 
