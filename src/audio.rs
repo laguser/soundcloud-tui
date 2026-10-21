@@ -53,6 +53,7 @@ impl AudioPlayer {
             .arg("--audio-pitch-correction=no")
             .arg("--demuxer-lavf-probesize=10000000")
             .arg("--demuxer-lavf-buffersize=10000000")
+            .arg("--demuxer-lavf-o=allowed_extensions=ALL")
             .arg("--demuxer-readahead-secs=15")
             .arg("--audio-buffer=0.5")
             .arg(format!("--input-ipc-server={}", ipc_path))

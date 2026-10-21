@@ -1,5 +1,5 @@
 use crate::storage::TrackItem;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -104,36 +104,61 @@ impl SearchEngine {
 
     pub fn choose_best_transcoding(transcodings: &[serde_json::Value]) -> Option<&str> {
         let score = |tr: &serde_json::Value| -> i32 {
-            let snipped = tr.get("snipped").and_then(|s| s.as_bool()).unwrap_or(false);
-            if snipped {
-                return -100;
-            }
+            let url = tr.get("url").and_then(|u| u.as_str()).unwrap_or("");
             let preset = tr.get("preset").and_then(|p| p.as_str()).unwrap_or("");
             let proto = tr.get("format").and_then(|f| f.get("protocol")).and_then(|p| p.as_str()).unwrap_or("");
             let quality = tr.get("quality").and_then(|q| q.as_str()).unwrap_or("");
+            let mime = tr.get("format").and_then(|f| f.get("mime_type")).and_then(|m| m.as_str()).unwrap_or("");
+            let snipped = tr.get("snipped").and_then(|s| s.as_bool()).unwrap_or(false);
+
+            // Completely reject DRM / CENC / PlayReady / Widevine / encrypted streams
+            if snipped
+                || url.contains("/cenc/")
+                || url.contains("cenc")
+                || preset.contains("cenc")
+                || preset.contains("drm")
+                || proto.contains("cenc")
+                || proto.contains("encrypted")
+                || mime.contains("cenc")
+                || mime.contains("drm")
+            {
+                return -10000;
+            }
 
             let mut pts = 0;
-            // Progressive MP3 is the most reliable, instant seeking, zero manifest errors
+            // Progressive MP3 is the most reliable, unencrypted, instant seeking
             if proto == "progressive" {
-                pts += 600;
+                pts += 1000;
             } else if proto == "hls" {
                 pts += 200;
             }
 
-            if preset.contains("original") || preset.contains("flac") || preset.contains("lossless") {
+            if preset.contains("mp3") || quality == "sq" {
+                pts += 500;
+            } else if preset.contains("opus") {
                 pts += 300;
-            } else if preset.contains("aac") || preset.contains("256") || preset.contains("160") {
-                pts += 200;
-            } else if preset.contains("mp3") || quality == "sq" {
-                pts += 150;
+            } else if preset.contains("aac") && !preset.contains("cenc") {
+                pts += 100;
             }
             pts
         };
 
         transcodings
             .iter()
+            .filter(|tr| score(tr) > 0)
             .max_by_key(|tr| score(tr))
             .and_then(|tr| tr.get("url").and_then(|u| u.as_str()))
+            .or_else(|| {
+                transcodings
+                    .iter()
+                    .find(|tr| {
+                        let u = tr.get("url").and_then(|u| u.as_str()).unwrap_or("");
+                        let p = tr.get("preset").and_then(|p| p.as_str()).unwrap_or("");
+                        let pr = tr.get("format").and_then(|f| f.get("protocol")).and_then(|p| p.as_str()).unwrap_or("");
+                        !u.contains("cenc") && !p.contains("cenc") && !pr.contains("encrypted")
+                    })
+                    .and_then(|tr| tr.get("url").and_then(|u| u.as_str()))
+            })
     }
 
     pub fn resolve_stream_url(track: &TrackItem, client_id_holder: &Arc<Mutex<Option<String>>>) -> Option<String> {
@@ -267,7 +292,7 @@ impl SearchEngine {
     }
 
     fn download_to_cache(track_id: &str, stream_url: &str) {
-        if track_id.is_empty() {
+        if track_id.is_empty() || stream_url.contains("cenc") || stream_url.contains("drm") {
             return;
         }
         let safe_name: String = track_id.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect();
@@ -282,8 +307,10 @@ impl SearchEngine {
                 .arg("-y")
                 .arg("-v")
                 .arg("error")
+                .arg("-allowed_extensions")
+                .arg("ALL")
                 .arg("-headers")
-                .arg("User-Agent: Mozilla/5.0\r\n")
+                .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0\r\n")
                 .arg("-i")
                 .arg(stream_url)
                 .arg("-c")
@@ -291,6 +318,9 @@ impl SearchEngine {
                 .arg("-f")
                 .arg("ipod")
                 .arg(&tmp_file)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .status();
 
             if tmp_file.exists() && std::fs::metadata(&tmp_file).map(|m| m.len() > 100 * 1024).unwrap_or(false) {
@@ -309,10 +339,13 @@ impl SearchEngine {
                 .arg("-m")
                 .arg("180")
                 .arg("-H")
-                .arg("User-Agent: Mozilla/5.0")
+                .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
                 .arg(stream_url)
                 .arg("-o")
                 .arg(&tmp_file)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .status();
 
             if tmp_file.exists() && std::fs::metadata(&tmp_file).map(|m| m.len() > 250 * 1024).unwrap_or(false) {
