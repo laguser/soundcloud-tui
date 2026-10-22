@@ -111,6 +111,17 @@ impl Default for Config {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TrackPlaybackState {
+    pub position: f64,
+    #[serde(default = "default_track_speed")]
+    pub speed: f64,
+}
+
+fn default_track_speed() -> f64 {
+    1.0
+}
+
 #[derive(Serialize, Deserialize, Default, Debug)]
 pub struct DataStore {
     pub config: Config,
@@ -118,6 +129,8 @@ pub struct DataStore {
     pub liked: Vec<TrackItem>,
     #[serde(default)]
     pub playlists: Vec<PlaylistItem>,
+    #[serde(default)]
+    pub track_states: std::collections::HashMap<String, TrackPlaybackState>,
 }
 
 impl DataStore {
@@ -186,6 +199,27 @@ impl DataStore {
             self.history.truncate(200);
         }
         self.save();
+    }
+
+    pub fn save_track_state(&mut self, track_id: &str, position: f64, speed: f64) {
+        if track_id.is_empty() {
+            return;
+        }
+        self.track_states.insert(
+            track_id.to_string(),
+            TrackPlaybackState { position, speed },
+        );
+        if self.track_states.len() > 500 {
+            // Keep size bounded
+            if let Some(first_key) = self.track_states.keys().next().cloned() {
+                self.track_states.remove(&first_key);
+            }
+        }
+        self.save();
+    }
+
+    pub fn get_track_state(&self, track_id: &str) -> Option<&TrackPlaybackState> {
+        self.track_states.get(track_id)
     }
 
     pub fn toggle_like(&mut self, track: &TrackItem) -> bool {
@@ -257,5 +291,26 @@ impl DataStore {
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_track_playback_state_persistence() {
+        let mut store = DataStore::default();
+        store.save_track_state("track_123", 42.5, 1.25);
+
+        let state = store.get_track_state("track_123").expect("state should exist");
+        assert_eq!(state.position, 42.5);
+        assert_eq!(state.speed, 1.25);
+
+        // Update with 0.85
+        store.save_track_state("track_123", 10.0, 0.85);
+        let updated = store.get_track_state("track_123").unwrap();
+        assert_eq!(updated.position, 10.0);
+        assert_eq!(updated.speed, 0.85);
     }
 }

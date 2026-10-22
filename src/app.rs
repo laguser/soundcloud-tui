@@ -109,6 +109,9 @@ pub struct App {
     pub current_pos: f64,
     pub total_duration: f64,
     pub volume: u32,
+    pub current_speed: f64,
+    pub pending_resume_pos: Option<f64>,
+    pub last_saved_pos_instant: Option<Instant>,
     pub shuffle: bool,
     pub repeat: RepeatMode,
     pub prefetched_track_id: Option<String>,
@@ -180,6 +183,9 @@ impl App {
             current_pos: 0.0,
             total_duration: 0.0,
             volume,
+            current_speed: 1.0,
+            pending_resume_pos: None,
+            last_saved_pos_instant: None,
             shuffle: false,
             repeat: RepeatMode::Off,
             prefetched_track_id: None,
@@ -217,6 +223,14 @@ impl App {
     }
 
     pub fn play_track(&mut self, track: TrackItem) {
+        // Remember previous track position and speed before switching
+        let prev_id = self.current_track().map(|t| t.id.clone());
+        if let Some(id) = prev_id {
+            if self.current_pos > 1.0 {
+                self.store.save_track_state(&id, self.current_pos, self.current_speed);
+            }
+        }
+
         self.store.add_history(track.clone());
 
         // Put in queue if not present or select it
@@ -227,9 +241,24 @@ impl App {
             self.current_track_idx = Some(self.queue.len() - 1);
         }
         self.is_paused = false;
-        self.current_pos = 0.0;
         self.total_duration = track.duration;
         self.prefetched_track_id = None;
+
+        // Restore saved position and speed for this track if remembered
+        if let Some(state) = self.store.get_track_state(&track.id).cloned() {
+            self.current_speed = state.speed;
+            if state.position > 3.0 && (track.duration <= 0.0 || state.position < track.duration - 5.0) {
+                self.pending_resume_pos = Some(state.position);
+                self.current_pos = state.position;
+            } else {
+                self.pending_resume_pos = None;
+                self.current_pos = 0.0;
+            }
+        } else {
+            self.current_speed = 1.0;
+            self.pending_resume_pos = None;
+            self.current_pos = 0.0;
+        }
 
         // Update MPRIS2 for Caelestia Shell and system media keys immediately
         self.mpris.update(
@@ -250,8 +279,16 @@ impl App {
         // 1. Check local on-disk cache (instant 0ms playback)
         if let Some(cached_file) = crate::storage::DataStore::get_cached_track_path(&track.id) {
             let path_str = cached_file.to_string_lossy().to_string();
-            self.set_status(&format!("Playing (cached): {}", track.title));
             self.player.play(&path_str);
+            if self.current_speed != 1.0 {
+                self.player.set_speed(self.current_speed);
+            }
+            if let Some(pos) = self.pending_resume_pos.take() {
+                self.player.seek_to(pos);
+                self.set_status(&format!("Resumed at {}: {}", crate::ui::format_duration(pos), track.title));
+            } else {
+                self.set_status(&format!("Playing (cached): {}", track.title));
+            }
             return;
         }
 
@@ -472,6 +509,52 @@ impl App {
         self.current_pos = (self.current_pos + seconds).max(0.0);
     }
 
+    pub fn set_speed(&mut self, speed: f64) {
+        let clamped = ((speed * 100.0).round() / 100.0).clamp(0.25, 3.0);
+        self.current_speed = clamped;
+        self.player.set_speed(clamped);
+        let cur_id = self.current_track().map(|t| t.id.clone());
+        if let Some(id) = cur_id {
+            self.store.save_track_state(&id, self.current_pos, self.current_speed);
+        }
+        if (clamped - 1.0).abs() < 0.001 {
+            self.set_status("Speed: 1.00x (Normal)");
+        } else {
+            self.set_status(&format!("Speed: {:.2}x", clamped));
+        }
+    }
+
+    pub fn speed_down(&mut self) {
+        // If normal 1.0x, drop straight to 0.85x as requested; otherwise step down by 0.05
+        if (self.current_speed - 1.0).abs() < 0.01 {
+            self.set_speed(0.85);
+        } else {
+            self.set_speed(self.current_speed - 0.05);
+        }
+    }
+
+    pub fn speed_up(&mut self) {
+        // If normal 1.0x, jump straight to 1.25x as requested; otherwise step up by 0.05
+        if (self.current_speed - 1.0).abs() < 0.01 {
+            self.set_speed(1.25);
+        } else {
+            self.set_speed(self.current_speed + 0.05);
+        }
+    }
+
+    pub fn reset_speed(&mut self) {
+        self.set_speed(1.0);
+    }
+
+    pub fn save_current_state(&mut self) {
+        let cur_id = self.current_track().map(|t| t.id.clone());
+        if let Some(id) = cur_id {
+            if self.current_pos > 1.0 {
+                self.store.save_track_state(&id, self.current_pos, self.current_speed);
+            }
+        }
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) {
         // Global media keys with ctrl or alt
         if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -624,6 +707,18 @@ impl App {
                     self.toggle_pause();
                     return;
                 }
+                KeyCode::Char('[') if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
+                    self.speed_down();
+                    return;
+                }
+                KeyCode::Char(']') if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
+                    self.speed_up();
+                    return;
+                }
+                KeyCode::Char('0') if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
+                    self.reset_speed();
+                    return;
+                }
                 KeyCode::Char(c) => {
                     self.query_chars.insert(self.input_cursor, c);
                     self.input_cursor += 1;
@@ -669,6 +764,15 @@ impl App {
                 } else {
                     self.play_selected_in_current_view();
                 }
+            }
+            KeyCode::Char('[') | KeyCode::Char('<') => {
+                self.speed_down();
+            }
+            KeyCode::Char(']') | KeyCode::Char('>') => {
+                self.speed_up();
+            }
+            KeyCode::Char('\\') | KeyCode::Backspace | KeyCode::Char('0') => {
+                self.reset_speed();
             }
             KeyCode::Char('n') => {
                 self.play_next();
@@ -994,12 +1098,20 @@ impl App {
                     // Only apply if this is still the active track
                     if self.current_track().map(|t| t.id == track_id).unwrap_or(false) {
                         self.player.play(&url);
+                        if self.current_speed != 1.0 {
+                            self.player.set_speed(self.current_speed);
+                        }
                         if self.is_paused {
                             self.player.set_pause(true);
                         }
-                        let title = self.current_track().map(|t| t.title.as_str()).unwrap_or("");
-                        let label = if source == "direct" { "Streaming" } else { "Streaming (ytdl)" };
-                        self.set_status(&format!("{}: {}", label, title));
+                        let title = self.current_track().map(|t| t.title.clone()).unwrap_or_default();
+                        if let Some(pos) = self.pending_resume_pos.take() {
+                            self.player.seek_to(pos);
+                            self.set_status(&format!("Resumed at {}: {}", crate::ui::format_duration(pos), title));
+                        } else {
+                            let label = if source == "direct" { "Streaming" } else { "Streaming (ytdl)" };
+                            self.set_status(&format!("{}: {}", label, title));
+                        }
                     }
                 }
                 StreamResolveEvent::Failed { track_id, title } => {
@@ -1013,11 +1125,39 @@ impl App {
         // Audio events
         while let Some(ev) = self.player.poll_event() {
             match ev {
-                crate::audio::PlayerEvent::TimePos(pos) => self.current_pos = pos,
+                crate::audio::PlayerEvent::FileLoaded => {
+                    if let Some(pos) = self.pending_resume_pos.take() {
+                        self.player.seek_to(pos);
+                    }
+                    if self.current_speed != 1.0 {
+                        self.player.set_speed(self.current_speed);
+                    }
+                }
+                crate::audio::PlayerEvent::TimePos(pos) => {
+                    self.current_pos = pos;
+                    let should_save = match self.last_saved_pos_instant {
+                        Some(last) => last.elapsed() >= std::time::Duration::from_secs(3),
+                        None => true,
+                    };
+                    if should_save {
+                        self.last_saved_pos_instant = Some(std::time::Instant::now());
+                        let cur_id = self.current_track().map(|t| t.id.clone());
+                        if let Some(id) = cur_id {
+                            self.store.save_track_state(&id, pos, self.current_speed);
+                        }
+                    }
+                }
                 crate::audio::PlayerEvent::Duration(dur) => self.total_duration = dur,
                 crate::audio::PlayerEvent::Paused(p) => self.is_paused = p,
                 crate::audio::PlayerEvent::Volume(v) => self.volume = v as u32,
-                crate::audio::PlayerEvent::PlaybackEnded => self.play_next(),
+                crate::audio::PlayerEvent::PlaybackEnded => {
+                    let cur_id = self.current_track().map(|t| t.id.clone());
+                    if let Some(id) = cur_id {
+                        // Mark track as finished so next time it starts from 0:00
+                        self.store.save_track_state(&id, 0.0, self.current_speed);
+                    }
+                    self.play_next();
+                }
                 crate::audio::PlayerEvent::Idle(idle) => {
                     if idle && self.current_track().is_some() && self.total_duration > 10.0 && self.current_pos >= (self.total_duration - 4.0).max(1.0) {
                         self.play_next();

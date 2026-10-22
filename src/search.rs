@@ -354,6 +354,8 @@ impl SearchEngine {
         if track_id.is_empty() || stream_url.contains("cenc") || stream_url.contains("drm") {
             return;
         }
+        // Yield briefly so mpv gets full network priority to start playback immediately
+        thread::sleep(std::time::Duration::from_millis(500));
         let safe_name: String = track_id.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect();
         let cache_dir = crate::storage::DataStore::cache_dir();
 

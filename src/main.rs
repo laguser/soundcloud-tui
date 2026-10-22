@@ -39,10 +39,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut app = App::new();
 
-    let tick_rate = Duration::from_millis(50);
+    let tick_rate = Duration::from_millis(30);
     let mut last_tick = Instant::now();
 
     loop {
+        app.poll_async_events();
         terminal.draw(|f| ui::render(f, &app))?;
 
         let timeout = tick_rate
@@ -52,6 +53,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                    app.save_current_state();
+                    break;
+                }
+
+                if key.code == KeyCode::Char('q') && !app.is_editing_search && app.modal_input.is_none() && app.modal_target_track.is_none() {
+                    app.save_current_state();
                     break;
                 }
 
@@ -65,6 +72,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     };
 
                     if is_double_esc {
+                        app.save_current_state();
                         break;
                     }
 
@@ -81,12 +89,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
 
                 app.handle_key(key);
+                app.poll_async_events();
             }
         }
 
         if last_tick.elapsed() >= tick_rate {
             last_tick = Instant::now();
-            app.poll_async_events();
         }
     }
 

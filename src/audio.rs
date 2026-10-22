@@ -17,6 +17,7 @@ pub enum PlayerEvent {
     Volume(f64),
     PlaybackEnded,
     PlaybackError(String),
+    FileLoaded,
 }
 
 pub struct AudioPlayer {
@@ -53,8 +54,8 @@ impl AudioPlayer {
             .arg("--script-opts=ytdl_hook-ytdl_path=yt-dlp")
             .arg("--user-agent=Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
             .arg("--hls-bitrate=max")
-            .arg("--audio-pitch-correction=no")
-            .arg("--demuxer-lavf-analyzeduration=0.1")
+            .arg("--audio-pitch-correction=yes")
+            .arg("--demuxer-lavf-analyzeduration=0.05")
             .arg("--demuxer-lavf-probesize=32768")
             .arg("--demuxer-lavf-o=allowed_extensions=ALL")
             .arg("--demuxer-readahead-secs=4")
@@ -132,7 +133,9 @@ impl AudioPlayer {
         for line in reader.lines().map_while(Result::ok) {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
                 if let Some(event) = v.get("event").and_then(|e| e.as_str()) {
-                    if event == "end-file" {
+                    if event == "file-loaded" {
+                        let _ = tx.send(PlayerEvent::FileLoaded);
+                    } else if event == "end-file" {
                         let reason = v.get("reason").and_then(|r| r.as_str()).unwrap_or("");
                         if reason == "eof" {
                             let _ = tx.send(PlayerEvent::PlaybackEnded);
@@ -200,6 +203,16 @@ impl AudioPlayer {
 
     pub fn seek(&self, seconds: f64) {
         let msg = format!(r#"{{"command": ["seek", {}, "relative"]}}"#, seconds);
+        self.send_command(&msg);
+    }
+
+    pub fn seek_to(&self, seconds: f64) {
+        let msg = format!(r#"{{"command": ["seek", {:.2}, "absolute"]}}"#, seconds);
+        self.send_command(&msg);
+    }
+
+    pub fn set_speed(&self, speed: f64) {
+        let msg = format!(r#"{{"command": ["set_property", "speed", {:.3}]}}"#, speed);
         self.send_command(&msg);
     }
 

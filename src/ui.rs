@@ -52,7 +52,7 @@ pub fn render(f: &mut Frame, app: &App) {
     }
 }
 
-fn format_duration(seconds: f64) -> String {
+pub fn format_duration(seconds: f64) -> String {
     let s = seconds.max(0.0) as u64;
     let m = s / 60;
     let rem_s = s % 60;
@@ -66,7 +66,14 @@ fn render_top_bar(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(format!("  {} ", current_view), Style::default().fg(accent).add_modifier(Modifier::BOLD)),
         Span::styled("· ", Style::default().fg(Color::Rgb(50, 50, 50))),
         Span::styled(format!("vol {}% ", app.volume), Style::default().fg(Color::Rgb(110, 110, 110))),
+        Span::styled("· ", Style::default().fg(Color::Rgb(50, 50, 50))),
     ];
+
+    if (app.current_speed - 1.0).abs() > 0.001 {
+        spans.push(Span::styled(format!("{:.2}x ", app.current_speed), Style::default().fg(accent).add_modifier(Modifier::BOLD)));
+    } else {
+        spans.push(Span::styled("1.00x ", Style::default().fg(Color::Rgb(110, 110, 110))));
+    }
 
     if app.shuffle {
         spans.push(Span::styled("· ", Style::default().fg(Color::Rgb(50, 50, 50))));
@@ -763,6 +770,12 @@ fn render_bottom_bar(f: &mut Frame, _app: &App, area: Rect) {
         Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
         Span::styled("r ", Style::default().fg(Color::Rgb(120, 120, 120))),
         Span::styled("repeat ", Style::default().fg(Color::Rgb(70, 70, 70))),
+        Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
+        Span::styled("[/] ", Style::default().fg(Color::Rgb(120, 120, 120))),
+        Span::styled("spd (0.85/1.25) ", Style::default().fg(Color::Rgb(70, 70, 70))),
+        Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
+        Span::styled("bs/0 ", Style::default().fg(Color::Rgb(120, 120, 120))),
+        Span::styled("norm ", Style::default().fg(Color::Rgb(70, 70, 70))),
         Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
         Span::styled("y ", Style::default().fg(Color::Rgb(120, 120, 120))),
         Span::styled("lyrics ", Style::default().fg(Color::Rgb(70, 70, 70))),
