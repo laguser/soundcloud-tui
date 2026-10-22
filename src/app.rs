@@ -446,8 +446,9 @@ impl App {
         if self.current_track().is_none() {
             return;
         }
-        self.player.toggle_pause();
         self.is_paused = !self.is_paused;
+        self.player.set_pause(self.is_paused);
+        self.set_status(if self.is_paused { "Paused" } else { "Playing" });
         if let Some(track) = self.current_track().cloned() {
             self.mpris.update(
                 &track.title,
@@ -610,6 +611,19 @@ impl App {
         // Search edit mode vs navigation mode
         if self.view_mode == ViewMode::Search && self.is_editing_search {
             match key.code {
+                KeyCode::Esc => {
+                    self.is_editing_search = false;
+                    self.set_status("Navigation mode (Space to Play/Pause, Enter to Play)");
+                    return;
+                }
+                KeyCode::Char(' ') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                    self.toggle_pause();
+                    return;
+                }
+                KeyCode::Char('p') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                    self.toggle_pause();
+                    return;
+                }
                 KeyCode::Char(c) => {
                     self.query_chars.insert(self.input_cursor, c);
                     self.input_cursor += 1;
@@ -650,31 +664,11 @@ impl App {
         // Navigation mode across screens
         match key.code {
             KeyCode::Char(' ') => {
-                let selected_track_id = match self.view_mode {
-                    ViewMode::Search => self.search_results.get(self.search_cursor).map(|t| t.id.as_str()),
-                    ViewMode::Queue => self.queue.get(self.queue_cursor).map(|t| t.id.as_str()),
-                    ViewMode::Favorites => self.store.liked.get(self.favorites_cursor).map(|t| t.id.as_str()),
-                    ViewMode::History => self.store.history.get(self.history_cursor).map(|e| e.track.id.as_str()),
-                    ViewMode::PlaylistDetail => {
-                        self.selected_playlist_idx.and_then(|idx| {
-                            self.store.playlists.get(idx).and_then(|pl| pl.tracks.get(self.playlist_detail_cursor).map(|t| t.id.as_str()))
-                        })
-                    }
-                    ViewMode::UserProfile => {
-                        self.current_user_profile.as_ref().and_then(|p| p.tracks.get(self.user_profile_cursor).map(|t| t.id.as_str()))
-                    }
-                    _ => None,
-                };
-
-                if let Some(sel_id) = selected_track_id {
-                    if let Some(cur) = self.current_track() {
-                        if cur.id == sel_id {
-                            self.toggle_pause();
-                            return;
-                        }
-                    }
+                if self.current_track().is_some() {
+                    self.toggle_pause();
+                } else {
+                    self.play_selected_in_current_view();
                 }
-                self.play_selected_in_current_view();
             }
             KeyCode::Char('n') => {
                 self.play_next();
@@ -777,8 +771,6 @@ impl App {
                 ViewMode::Search => {
                     if self.search_cursor > 0 {
                         self.search_cursor -= 1;
-                    } else {
-                        self.is_editing_search = true;
                     }
                 }
                 ViewMode::Queue => {
@@ -1002,6 +994,9 @@ impl App {
                     // Only apply if this is still the active track
                     if self.current_track().map(|t| t.id == track_id).unwrap_or(false) {
                         self.player.play(&url);
+                        if self.is_paused {
+                            self.player.set_pause(true);
+                        }
                         let title = self.current_track().map(|t| t.title.as_str()).unwrap_or("");
                         let label = if source == "direct" { "Streaming" } else { "Streaming (ytdl)" };
                         self.set_status(&format!("{}: {}", label, title));

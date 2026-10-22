@@ -23,6 +23,7 @@ pub struct AudioPlayer {
     _process: Option<Child>,
     ipc_path: String,
     event_rx: Receiver<PlayerEvent>,
+    cmd_tx: Sender<String>,
     #[allow(dead_code)]
     is_running: Arc<AtomicBool>,
 }
@@ -36,6 +37,7 @@ impl AudioPlayer {
         let ipc_path = format!("/tmp/sctui_mpv_{}_{}.sock", std::process::id(), timestamp);
 
         let (tx, rx) = channel();
+        let (cmd_tx, cmd_rx) = channel::<String>();
         let is_running = Arc::new(AtomicBool::new(false));
 
         // Start mpv in idle background mode with lossless streaming & IPC (completely headless & fast)
@@ -71,18 +73,19 @@ impl AudioPlayer {
 
         // Spawn IPC event listener thread
         thread::spawn(move || {
-            Self::ipc_listener_loop(ipc_clone, tx, running_clone);
+            Self::ipc_listener_loop(ipc_clone, tx, cmd_rx, running_clone);
         });
 
         Self {
             _process: process,
             ipc_path,
             event_rx: rx,
+            cmd_tx,
             is_running,
         }
     }
 
-    fn ipc_listener_loop(ipc_path: String, tx: Sender<PlayerEvent>, is_running: Arc<AtomicBool>) {
+    fn ipc_listener_loop(ipc_path: String, tx: Sender<PlayerEvent>, cmd_rx: Receiver<String>, is_running: Arc<AtomicBool>) {
         // Wait for socket to be ready
         for _ in 0..50 {
             if std::path::Path::new(&ipc_path).exists() {
@@ -116,6 +119,14 @@ impl AudioPlayer {
             let _ = writeln!(stream_writer, "{}", obs);
         }
         let _ = stream_writer.flush();
+
+        // Spawn dedicated command writer on the persistent stream
+        thread::spawn(move || {
+            while let Ok(cmd) = cmd_rx.recv() {
+                let _ = writeln!(stream_writer, "{}", cmd);
+                let _ = stream_writer.flush();
+            }
+        });
 
         let reader = BufReader::new(stream);
         for line in reader.lines().map_while(Result::ok) {
@@ -167,10 +178,7 @@ impl AudioPlayer {
     }
 
     pub fn send_command(&self, cmd: &str) {
-        if let Ok(mut stream) = UnixStream::connect(&self.ipc_path) {
-            let _ = writeln!(stream, "{}", cmd);
-            let _ = stream.flush();
-        }
+        let _ = self.cmd_tx.send(cmd.to_string());
     }
 
     pub fn play(&self, url: &str) {
@@ -179,6 +187,12 @@ impl AudioPlayer {
         self.send_command(r#"{"command": ["set_property", "pause", false]}"#);
     }
 
+    pub fn set_pause(&self, paused: bool) {
+        let msg = format!(r#"{{"command": ["set_property", "pause", {}]}}"#, paused);
+        self.send_command(&msg);
+    }
+
+    #[allow(dead_code)]
     pub fn toggle_pause(&self) {
         let msg = r#"{"command": ["cycle", "pause"]}"#;
         self.send_command(msg);
