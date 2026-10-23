@@ -1,7 +1,7 @@
 <p align="center">
   <b>minimalist terminal soundcloud & audio player for linux</b>
   <br>
-  <i>fast streaming · zero bloat · @ttype aesthetic · rust</i>
+  <i>fast streaming · rust</i>
 </p>
 
 <p align="center">
