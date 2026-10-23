@@ -707,15 +707,21 @@ impl App {
                     self.toggle_pause();
                     return;
                 }
-                KeyCode::Char('[') if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
+                KeyCode::Char('[') | KeyCode::Char('<') | KeyCode::Char(',')
+                    if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
+                {
                     self.speed_down();
                     return;
                 }
-                KeyCode::Char(']') if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
+                KeyCode::Char(']') | KeyCode::Char('>') | KeyCode::Char('.')
+                    if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
+                {
                     self.speed_up();
                     return;
                 }
-                KeyCode::Char('0') if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
+                KeyCode::Char('0') | KeyCode::Char('\\')
+                    if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
+                {
                     self.reset_speed();
                     return;
                 }
@@ -765,10 +771,22 @@ impl App {
                     self.play_selected_in_current_view();
                 }
             }
-            KeyCode::Char('[') | KeyCode::Char('<') => {
+            KeyCode::Char('<')
+            | KeyCode::Char(',')
+            | KeyCode::Char('[')
+            | KeyCode::Char('б')
+            | KeyCode::Char('Б')
+            | KeyCode::Char('х')
+            | KeyCode::Char('Х') => {
                 self.speed_down();
             }
-            KeyCode::Char(']') | KeyCode::Char('>') => {
+            KeyCode::Char('>')
+            | KeyCode::Char('.')
+            | KeyCode::Char(']')
+            | KeyCode::Char('ю')
+            | KeyCode::Char('Ю')
+            | KeyCode::Char('ъ')
+            | KeyCode::Char('Ъ') => {
                 self.speed_up();
             }
             KeyCode::Char('\\') | KeyCode::Backspace | KeyCode::Char('0') => {
