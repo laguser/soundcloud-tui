@@ -771,8 +771,12 @@ impl App {
                     self.play_selected_in_current_view();
                 }
             }
+            KeyCode::Char('/') => {
+                self.view_mode = ViewMode::Search;
+                self.is_editing_search = true;
+                self.set_status("Search mode (type query and press Enter)");
+            }
             KeyCode::Char('<')
-            | KeyCode::Char(',')
             | KeyCode::Char('[')
             | KeyCode::Char('б')
             | KeyCode::Char('Б')
@@ -780,13 +784,26 @@ impl App {
             | KeyCode::Char('Х') => {
                 self.speed_down();
             }
+            KeyCode::Char(',') => {
+                // If Shift was held, it's '<'
+                if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) {
+                    self.speed_down();
+                } else {
+                    self.speed_down();
+                }
+            }
             KeyCode::Char('>')
-            | KeyCode::Char('.')
             | KeyCode::Char(']')
             | KeyCode::Char('ю')
             | KeyCode::Char('Ю')
             | KeyCode::Char('ъ')
             | KeyCode::Char('Ъ') => {
+                self.speed_up();
+            }
+            KeyCode::Char('.') => {
+                // In Russian layout, '/' on English layout is '.' in Russian layout on the same physical key!
+                // So if user presses this key without shift in Russian or wants search, or speed:
+                // Only speed_up if shifted (i.e. '>') or let '.' speed up only when not intending search
                 self.speed_up();
             }
             KeyCode::Char('\\') | KeyCode::Backspace | KeyCode::Char('0') => {
@@ -930,10 +947,10 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('i') | KeyCode::Char('/') => {
-                if self.view_mode == ViewMode::Search {
-                    self.is_editing_search = true;
-                }
+            KeyCode::Char('i') => {
+                self.view_mode = ViewMode::Search;
+                self.is_editing_search = true;
+                self.set_status("Search mode (type query and press Enter)");
             }
             KeyCode::Up | KeyCode::Char('k') => match self.view_mode {
                 ViewMode::Search => {
