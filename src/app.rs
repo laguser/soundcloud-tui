@@ -807,6 +807,52 @@ impl App {
                 };
                 self.is_editing_search = false;
             }
+            KeyCode::Char('H') => {
+                // Jump to History view
+                self.view_mode = ViewMode::History;
+                self.is_editing_search = false;
+                self.set_status("Switched to History");
+            }
+            KeyCode::Char('F') => {
+                // Jump to Favorites view
+                self.view_mode = ViewMode::Favorites;
+                self.is_editing_search = false;
+                self.set_status("Switched to Favorites");
+            }
+            KeyCode::Char('Q') => {
+                // Jump to Queue view
+                self.view_mode = ViewMode::Queue;
+                self.is_editing_search = false;
+                self.set_status("Switched to Queue");
+            }
+            KeyCode::Char('1') => {
+                self.view_mode = ViewMode::Search;
+                self.is_editing_search = true;
+            }
+            KeyCode::Char('2') => {
+                self.view_mode = ViewMode::Queue;
+                self.is_editing_search = false;
+            }
+            KeyCode::Char('3') => {
+                self.view_mode = ViewMode::Playlists;
+                self.is_editing_search = false;
+            }
+            KeyCode::Char('4') => {
+                self.view_mode = ViewMode::Favorites;
+                self.is_editing_search = false;
+            }
+            KeyCode::Char('5') => {
+                self.view_mode = ViewMode::History;
+                self.is_editing_search = false;
+            }
+            KeyCode::Char('6') => {
+                self.view_mode = ViewMode::Lyrics;
+                self.is_editing_search = false;
+            }
+            KeyCode::Char('7') => {
+                self.view_mode = ViewMode::Settings;
+                self.is_editing_search = false;
+            }
             KeyCode::Char('S') => {
                 // Sync library if oauth_token is set
                 if let Some(token) = self.store.config.oauth_token.clone() {

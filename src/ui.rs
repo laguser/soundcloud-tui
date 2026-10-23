@@ -62,12 +62,18 @@ pub fn format_duration(seconds: f64) -> String {
 fn render_top_bar(f: &mut Frame, app: &App, area: Rect) {
     let accent = app.theme_accent();
     let current_view = app.view_mode.name().to_lowercase();
+    let history_count = app.store.history.len();
     let mut spans = vec![
         Span::styled(format!("  {} ", current_view), Style::default().fg(accent).add_modifier(Modifier::BOLD)),
         Span::styled("· ", Style::default().fg(Color::Rgb(50, 50, 50))),
         Span::styled(format!("vol {}% ", app.volume), Style::default().fg(Color::Rgb(110, 110, 110))),
         Span::styled("· ", Style::default().fg(Color::Rgb(50, 50, 50))),
     ];
+
+    if app.view_mode == ViewMode::History {
+        spans.push(Span::styled(format!("{} tracks ", history_count), Style::default().fg(accent)));
+        spans.push(Span::styled("· ", Style::default().fg(Color::Rgb(50, 50, 50))));
+    }
 
     if (app.current_speed - 1.0).abs() > 0.001 {
         spans.push(Span::styled(format!("{:.2}x ", app.current_speed), Style::default().fg(accent).add_modifier(Modifier::BOLD)));
