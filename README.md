@@ -50,15 +50,21 @@ sudo apt install mpv yt-dlp
 
 ### Installation
 
-#### Pacman / Arch Linux (AUR)
+#### Prebuilt Binary (Instant Install — No Rust Compilation)
 ```bash
-# Prebuilt binary (instant install, no Rust compilation required):
-paru -S sctui-bin
-# Or using yay:
-yay -S sctui-bin
+# Direct single-binary install to ~/.local/bin:
+mkdir -p ~/.local/bin && curl -fLo ~/.local/bin/sctui https://github.com/laguser/soundcloud-tui/releases/latest/download/sctui && chmod +x ~/.local/bin/sctui
+```
 
-# Build latest git from source:
-paru -S soundcloud-tui-git
+#### Pacman / Arch Linux (`makepkg`)
+```bash
+# Install prebuilt binary package via pacman (no Rust needed):
+curl -fsSL https://raw.githubusercontent.com/laguser/soundcloud-tui/main/PKGBUILD.bin -o PKGBUILD && makepkg -si
+
+# Or build from source PKGBUILD:
+git clone https://github.com/laguser/soundcloud-tui.git
+cd soundcloud-tui
+makepkg -si
 ```
 
 #### Via Cargo (Recommended)
@@ -128,15 +134,21 @@ sudo pacman -S mpv yt-dlp
 
 ### Установка
 
-#### Через Pacman / AUR (Arch Linux):
+#### Готовый бинарник (Мгновенная установка без компиляции Rust):
 ```bash
-# Готовый бинарник (мгновенная установка без компиляции Rust):
-paru -S sctui-bin
-# Или через yay:
-yay -S sctui-bin
+# Прямая установка бинарника в ~/.local/bin за 1 секунду:
+mkdir -p ~/.local/bin && curl -fLo ~/.local/bin/sctui https://github.com/laguser/soundcloud-tui/releases/latest/download/sctui && chmod +x ~/.local/bin/sctui
+```
 
-# Сборка из git-исходников:
-paru -S soundcloud-tui-git
+#### Через Pacman / Arch Linux (`makepkg`):
+```bash
+# Установка готового бинарного пакета через pacman (без компиляции Rust):
+curl -fsSL https://raw.githubusercontent.com/laguser/soundcloud-tui/main/PKGBUILD.bin -o PKGBUILD && makepkg -si
+
+# Или сборка из git-исходников:
+git clone https://github.com/laguser/soundcloud-tui.git
+cd soundcloud-tui
+makepkg -si
 ```
 
 #### Через Cargo:
