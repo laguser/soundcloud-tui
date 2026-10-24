@@ -42,7 +42,9 @@ pub fn render(f: &mut Frame, app: &App) {
     }
 
     render_player_tape(f, app, chunks[4]);
-    render_bottom_bar(f, app, chunks[5]);
+    if app.store.config.show_bottom_hints {
+        render_bottom_bar(f, app, chunks[5]);
+    }
 
     // Modal overlays (Creating playlist or adding to playlist)
     if let Some(chars) = &app.modal_input {
@@ -231,7 +233,13 @@ fn render_tracks_list(
         let is_liked = app.store.is_liked(&track.url);
 
         let cursor_glyph = if is_selected {
-            "› "
+            match app.store.config.visual {
+                VisualStyle::Blocky => "▊ ",
+                VisualStyle::Minimal => "· ",
+                VisualStyle::Braille => "⣿ ",
+                VisualStyle::Tape => "▸ ",
+                VisualStyle::Waveform => "› ",
+            }
         } else if is_playing {
             "▶ "
         } else {
@@ -409,48 +417,92 @@ fn render_history_view(f: &mut Frame, app: &App, area: Rect) {
     render_tracks_list(f, &tracks, app.history_cursor, accent, area, app);
 }
 
-fn render_settings_view(f: &mut Frame, app: &App, size: Rect) {
-    let v = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Fill(1), Constraint::Length(8), Constraint::Fill(1)])
-        .split(size);
-
+fn render_settings_view(f: &mut Frame, app: &App, area: Rect) {
     let accent = app.theme_accent();
-    let mut lines = Vec::new();
-
-    lines.push(Line::from(Span::styled("settings", Style::default().fg(accent).add_modifier(Modifier::BOLD))));
-    lines.push(Line::from(Span::styled("────────────", Style::default().fg(Color::Rgb(40, 40, 40)))));
-
-    let items = [
-        ("theme", app.store.config.theme.name().to_string()),
-        ("style", app.store.config.visual.name().to_string()),
-        ("volume", format!("{}%", app.store.config.default_volume)),
-        ("discord rpc", if app.store.config.discord_rpc { "on".to_string() } else { "off".to_string() }),
-    ];
-
-    for (idx, (label, val)) in items.iter().enumerate() {
-        let is_selected = idx == app.settings_cursor;
-        let prefix = if is_selected { " → " } else { "   " };
-        let style_label = if is_selected {
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Rgb(100, 100, 100))
-        };
-        let style_val = if is_selected {
-            Style::default().fg(accent).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Rgb(120, 120, 120))
-        };
-
-        lines.push(Line::from(vec![
-            Span::styled(prefix, Style::default().fg(if is_selected { accent } else { Color::Rgb(50, 50, 50) })),
-            Span::styled(format!("{:<16}", label), style_label),
-            Span::styled(val.as_str(), style_val),
-        ]));
+    let max_lines = area.height as usize;
+    if max_lines == 0 {
+        return;
     }
 
-    let p = Paragraph::new(lines).alignment(Alignment::Center);
-    f.render_widget(p, v[1]);
+    let cache_info = crate::storage::DataStore::cache_size_label();
+    let rows: Vec<Option<(&str, usize, &str, String)>> = vec![
+        None,
+        Some(("APPEARANCE", 0, "", String::new())),
+        Some(("", 0, "color theme", app.store.config.theme.name().to_string())),
+        Some(("", 1, "player style", app.store.config.visual.name().to_string())),
+        Some(("", 2, "bottom hints bar", if app.store.config.show_bottom_hints { "visible".to_string() } else { "hidden".to_string() })),
+        None,
+        Some(("AUDIO & PLAYBACK", 0, "", String::new())),
+        Some(("", 3, "default volume", format!("{}%", app.store.config.default_volume))),
+        Some(("", 4, "speed pitch mode", app.store.config.pitch_mode.name().to_string())),
+        Some(("", 5, "auto-wave radio", if app.store.config.auto_wave { "enabled (infinite queue)".to_string() } else { "disabled".to_string() })),
+        Some(("", 6, "resume position", if app.store.config.resume_playback { "remember track pos & speed".to_string() } else { "always start at 0:00".to_string() })),
+        Some(("", 7, "seek step (←/→)", format!("{} sec", app.store.config.seek_step))),
+        None,
+        Some(("INTEGRATIONS", 0, "", String::new())),
+        Some(("", 8, "discord rich presence", if app.store.config.discord_rpc { "on".to_string() } else { "off".to_string() })),
+        Some(("", 9, "discord button link", if app.store.config.discord_buttons { "on (visible to others)".to_string() } else { "off (visible to self & others)".to_string() })),
+        None,
+        Some(("STORAGE & CACHE", 0, "", String::new())),
+        Some(("", 10, "gapless disk prefetch", if app.store.config.gapless_prefetch { "enabled (at 70%)".to_string() } else { "disabled".to_string() })),
+        Some(("", 11, "clear audio cache", cache_info)),
+    ];
+
+    let mut rendered_lines = Vec::new();
+    let mut selected_line_idx = 0usize;
+
+    for row in rows {
+        match row {
+            None => {
+                rendered_lines.push(Line::from(""));
+            }
+            Some((cat, _, "", _)) if !cat.is_empty() => {
+                rendered_lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  ── {} ", cat),
+                        Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        "─".repeat(38usize.saturating_sub(cat.len())),
+                        Style::default().fg(Color::Rgb(45, 45, 45)),
+                    ),
+                ]));
+            }
+            Some((_, idx, label, val)) => {
+                let is_selected = idx == app.settings_cursor;
+                if is_selected {
+                    selected_line_idx = rendered_lines.len();
+                }
+                let prefix = if is_selected { "  ▸ " } else { "    " };
+                let style_label = if is_selected {
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Rgb(130, 130, 130))
+                };
+                let style_val = if is_selected {
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Rgb(95, 95, 95))
+                };
+
+                rendered_lines.push(Line::from(vec![
+                    Span::styled(prefix, Style::default().fg(if is_selected { accent } else { Color::Rgb(50, 50, 50) })),
+                    Span::styled(format!("{:<24}", label), style_label),
+                    Span::styled(format!("‹ {} ›", val), style_val),
+                ]));
+            }
+        }
+    }
+
+    let scroll_offset = if selected_line_idx >= max_lines {
+        selected_line_idx - max_lines + 2
+    } else {
+        0
+    };
+
+    let visible: Vec<Line> = rendered_lines.into_iter().skip(scroll_offset).take(max_lines).collect();
+    let p = Paragraph::new(visible).alignment(Alignment::Center);
+    f.render_widget(p, area);
 }
 
 fn render_player_tape(f: &mut Frame, app: &App, area: Rect) {
@@ -486,77 +538,94 @@ fn render_player_tape(f: &mut Frame, app: &App, area: Rect) {
         ("0:00".to_string(), "0:00".to_string(), 0.0)
     };
 
-    // Dynamic waveform tape rendering
+    // Dynamic waveform / visual style tape rendering
     let bar_width = width.saturating_sub(24).clamp(12, 70);
     let filled_len = (bar_width as f64 * progress_ratio) as usize;
-
-    let waveform_blocks = [' ', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
     let mut tape_spans = Vec::new();
     tape_spans.push(Span::styled(format!("{:>5} ", cur_str), Style::default().fg(Color::Rgb(90, 90, 90))));
 
-    if !app.current_waveform.is_empty() {
-        // Render genuine SoundCloud waveform samples
-        let total_samples = app.current_waveform.len();
-        for i in 0..bar_width {
-            let sample_idx = (i * total_samples) / bar_width;
-            let val = app.current_waveform.get(sample_idx).copied().unwrap_or(0) as usize;
-            let glyph_idx = (val * (waveform_blocks.len() - 1)) / 100;
-            let glyph = waveform_blocks[glyph_idx.min(waveform_blocks.len() - 1)];
-
-            let style = if i < filled_len {
-                Style::default().fg(accent).add_modifier(Modifier::BOLD)
-            } else if i == filled_len {
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Rgb(55, 55, 55))
-            };
-            tape_spans.push(Span::styled(glyph.to_string(), style));
+    match app.store.config.visual {
+        VisualStyle::Waveform => {
+            let waveform_blocks = ['▂', '▃', '▄', '▅', '▆', '▇', '█'];
+            let total_samples = app.current_waveform.len();
+            for i in 0..bar_width {
+                let glyph = if total_samples > 0 {
+                    let sample_idx = (i * total_samples) / bar_width;
+                    let val = app.current_waveform.get(sample_idx).copied().unwrap_or(0) as usize;
+                    let glyph_idx = (val * (waveform_blocks.len() - 1)) / 100;
+                    waveform_blocks[glyph_idx.min(waveform_blocks.len() - 1)]
+                } else {
+                    waveform_blocks[(i * 3 + 2) % waveform_blocks.len()]
+                };
+                let style = if i < filled_len {
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD)
+                } else if i == filled_len {
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Rgb(55, 55, 55))
+                };
+                tape_spans.push(Span::styled(glyph.to_string(), style));
+            }
         }
-    } else {
-        // Fallback to chosen visual style
-        let bar_str: String = match app.store.config.visual {
-            VisualStyle::Tape => {
-                let mut s = String::new();
-                for i in 0..bar_width {
-                    if i < filled_len {
-                        s.push('━');
-                    } else if i == filled_len {
-                        s.push('●');
-                    } else {
-                        s.push('─');
-                    }
-                }
-                s
+        VisualStyle::Braille => {
+            let braille_blocks = ['⣀', '⣤', '⣶', '⣿'];
+            let total_samples = app.current_waveform.len();
+            for i in 0..bar_width {
+                let glyph = if total_samples > 0 {
+                    let sample_idx = (i * total_samples) / bar_width;
+                    let val = app.current_waveform.get(sample_idx).copied().unwrap_or(0) as usize;
+                    let glyph_idx = (val * (braille_blocks.len() - 1)) / 100;
+                    braille_blocks[glyph_idx.min(braille_blocks.len() - 1)]
+                } else {
+                    braille_blocks[(i * 2 + 1) % braille_blocks.len()]
+                };
+                let style = if i < filled_len {
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD)
+                } else if i == filled_len {
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Rgb(55, 55, 55))
+                };
+                tape_spans.push(Span::styled(glyph.to_string(), style));
             }
-            VisualStyle::Blocky => {
-                let mut s = String::new();
-                for i in 0..bar_width {
-                    if i < filled_len {
-                        s.push('█');
-                    } else if i == filled_len {
-                        s.push('▓');
-                    } else {
-                        s.push('░');
-                    }
-                }
-                s
+        }
+        VisualStyle::Tape => {
+            for i in 0..bar_width {
+                let (ch, style) = if i < filled_len {
+                    ('━', Style::default().fg(accent).add_modifier(Modifier::BOLD))
+                } else if i == filled_len {
+                    ('●', Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+                } else {
+                    ('─', Style::default().fg(Color::Rgb(55, 55, 55)))
+                };
+                tape_spans.push(Span::styled(ch.to_string(), style));
             }
-            VisualStyle::Minimal => {
-                let mut s = String::new();
-                for i in 0..bar_width {
-                    if i < filled_len {
-                        s.push('·');
-                    } else if i == filled_len {
-                        s.push('◆');
-                    } else {
-                        s.push(' ');
-                    }
-                }
-                s
+        }
+        VisualStyle::Blocky => {
+            for i in 0..bar_width {
+                let (ch, style) = if i < filled_len {
+                    ('█', Style::default().fg(accent))
+                } else if i == filled_len {
+                    ('▓', Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+                } else {
+                    ('░', Style::default().fg(Color::Rgb(55, 55, 55)))
+                };
+                tape_spans.push(Span::styled(ch.to_string(), style));
             }
-        };
-        tape_spans.push(Span::styled(bar_str, Style::default().fg(accent)));
+        }
+        VisualStyle::Minimal => {
+            for i in 0..bar_width {
+                let (ch, style) = if i < filled_len {
+                    ('·', Style::default().fg(accent).add_modifier(Modifier::BOLD))
+                } else if i == filled_len {
+                    ('◆', Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+                } else {
+                    ('·', Style::default().fg(Color::Rgb(45, 45, 45)))
+                };
+                tape_spans.push(Span::styled(ch.to_string(), style));
+            }
+        }
     }
 
     tape_spans.push(Span::styled(format!(" {:<5}", tot_str), Style::default().fg(Color::Rgb(90, 90, 90))));

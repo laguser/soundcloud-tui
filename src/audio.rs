@@ -214,6 +214,12 @@ impl AudioPlayer {
         self.send_command(&msg);
     }
 
+    pub fn set_pitch_correction(&self, keep_pitch: bool) {
+        let val = if keep_pitch { "true" } else { "false" };
+        let msg = format!(r#"{{"command": ["set_property", "audio-pitch-correction", {}]}}"#, val);
+        self.send_command(&msg);
+    }
+
     pub fn set_volume(&self, vol: f64) {
         let msg = format!(r#"{{"command": ["set_property", "volume", {}]}}"#, vol);
         self.send_command(&msg);

@@ -49,7 +49,7 @@ impl DiscordRpc {
                     RpcCommand::Update {
                         title,
                         artist,
-                        track_url: _,
+                        track_url,
                         artwork_url,
                         start_timestamp,
                         end_timestamp,
@@ -102,6 +102,17 @@ impl DiscordRpc {
                                     "small_text": if is_paused { "Paused" } else { "Playing" }
                                 }
                             });
+
+                            if let Some(ref u) = track_url {
+                                if u.starts_with("https://") || u.starts_with("http://") {
+                                    activity["buttons"] = serde_json::json!([
+                                        {
+                                            "label": "Listen on SoundCloud",
+                                            "url": u
+                                        }
+                                    ]);
+                                }
+                            }
 
                             if !is_paused {
                                 if let (Some(start), Some(end)) = (start_timestamp, end_timestamp) {

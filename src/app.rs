@@ -1,6 +1,6 @@
 use crate::audio::AudioPlayer;
 use crate::search::{SearchEngine, SearchResult};
-use crate::storage::{DataStore, ThemeColor, TrackItem, VisualStyle};
+use crate::storage::{DataStore, PitchMode, ThemeColor, TrackItem, VisualStyle};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -137,6 +137,7 @@ impl App {
         let volume = store.config.default_volume;
         let player = AudioPlayer::new();
         player.set_volume(volume as f64);
+        player.set_pitch_correction(store.config.pitch_mode == PitchMode::Keep);
         let discord = crate::discord::DiscordRpc::new(store.config.discord_client_id.clone());
         let mpris = crate::mpris::MprisManager::new();
         let lyrics_manager = crate::lyrics::LyricsManager::new();
@@ -250,12 +251,18 @@ impl App {
         self.prefetched_track_id = None;
 
         // Restore saved position and speed for this track if remembered
-        if let Some(state) = self.store.get_track_state(&track.id).cloned() {
-            self.current_speed = state.speed;
-            if state.position > 3.0 && (track.duration <= 0.0 || state.position < track.duration - 5.0) {
-                self.pending_resume_pos = Some(state.position);
-                self.current_pos = state.position;
+        if self.store.config.resume_playback {
+            if let Some(state) = self.store.get_track_state(&track.id).cloned() {
+                self.current_speed = state.speed;
+                if state.position > 3.0 && (track.duration <= 0.0 || state.position < track.duration - 5.0) {
+                    self.pending_resume_pos = Some(state.position);
+                    self.current_pos = state.position;
+                } else {
+                    self.pending_resume_pos = None;
+                    self.current_pos = 0.0;
+                }
             } else {
+                self.current_speed = 1.0;
                 self.pending_resume_pos = None;
                 self.current_pos = 0.0;
             }
@@ -453,7 +460,7 @@ impl App {
         let next_idx = match self.current_track_idx {
             Some(i) if i + 1 < self.queue.len() => i + 1,
             _ => {
-                if self.repeat == RepeatMode::Off {
+                if self.repeat == RepeatMode::Off && self.store.config.auto_wave {
                     if let Some(cur) = self.current_track().cloned() {
                         self.pending_auto_wave_play = true;
                         self.related_fetched_for_id = Some(cur.id.clone());
@@ -462,7 +469,7 @@ impl App {
                         return;
                     }
                     0
-                } else if self.repeat == RepeatMode::All {
+                } else if self.repeat == RepeatMode::All || self.repeat == RepeatMode::Off {
                     0
                 } else {
                     return;
@@ -1019,7 +1026,7 @@ impl App {
                     }
                 }
                 ViewMode::Lyrics => {
-                    self.seek(-5.0);
+                    self.seek(-(self.store.config.seek_step as f64));
                 }
             },
             KeyCode::Down | KeyCode::Char('j') => match self.view_mode {
@@ -1073,12 +1080,12 @@ impl App {
                     }
                 }
                 ViewMode::Settings => {
-                    if self.settings_cursor < 3 {
+                    if self.settings_cursor < 11 {
                         self.settings_cursor += 1;
                     }
                 }
                 ViewMode::Lyrics => {
-                    self.seek(5.0);
+                    self.seek(self.store.config.seek_step as f64);
                 }
             },
             KeyCode::Enter => {
@@ -1144,10 +1151,18 @@ impl App {
                 }
             }
             KeyCode::Left | KeyCode::Char('b') => {
-                self.seek(-5.0);
+                if self.view_mode == ViewMode::Settings {
+                    self.cycle_setting();
+                } else {
+                    self.seek(-(self.store.config.seek_step as f64));
+                }
             }
             KeyCode::Right | KeyCode::Char('f') => {
-                self.seek(5.0);
+                if self.view_mode == ViewMode::Settings {
+                    self.cycle_setting();
+                } else {
+                    self.seek(self.store.config.seek_step as f64);
+                }
             }
             KeyCode::Char('+') | KeyCode::Char('=') => {
                 self.adjust_volume(5);
@@ -1175,21 +1190,62 @@ impl App {
             }
             1 => {
                 self.store.config.visual = match self.store.config.visual {
-                    VisualStyle::Tape => VisualStyle::Minimal,
-                    VisualStyle::Minimal => VisualStyle::Blocky,
-                    VisualStyle::Blocky => VisualStyle::Tape,
+                    VisualStyle::Waveform => VisualStyle::Tape,
+                    VisualStyle::Tape => VisualStyle::Blocky,
+                    VisualStyle::Blocky => VisualStyle::Braille,
+                    VisualStyle::Braille => VisualStyle::Minimal,
+                    VisualStyle::Minimal => VisualStyle::Waveform,
                 };
             }
             2 => {
-                self.volume = if self.volume >= 100 { 50 } else { self.volume + 25 };
+                self.store.config.show_bottom_hints = !self.store.config.show_bottom_hints;
+            }
+            3 => {
+                self.volume = if self.volume >= 120 { 20 } else { self.volume + 10 };
                 self.store.config.default_volume = self.volume;
                 self.player.set_volume(self.volume as f64);
             }
-            3 => {
+            4 => {
+                self.store.config.pitch_mode = match self.store.config.pitch_mode {
+                    PitchMode::Natural => PitchMode::Keep,
+                    PitchMode::Keep => PitchMode::Natural,
+                };
+                self.player
+                    .set_pitch_correction(self.store.config.pitch_mode == PitchMode::Keep);
+            }
+            5 => {
+                self.store.config.auto_wave = !self.store.config.auto_wave;
+            }
+            6 => {
+                self.store.config.resume_playback = !self.store.config.resume_playback;
+            }
+            7 => {
+                self.store.config.seek_step = match self.store.config.seek_step {
+                    2 => 5,
+                    5 => 10,
+                    10 => 15,
+                    15 => 30,
+                    _ => 2,
+                };
+            }
+            8 => {
                 self.store.config.discord_rpc = !self.store.config.discord_rpc;
                 if !self.store.config.discord_rpc {
                     self.discord.clear();
+                } else {
+                    self.last_rpc_update = None;
                 }
+            }
+            9 => {
+                self.store.config.discord_buttons = !self.store.config.discord_buttons;
+                self.last_rpc_update = None;
+            }
+            10 => {
+                self.store.config.gapless_prefetch = !self.store.config.gapless_prefetch;
+            }
+            11 => {
+                let count = DataStore::clear_audio_cache();
+                self.set_status(&format!("Cleared {} files from local audio cache", count));
             }
             _ => {}
         }
@@ -1287,14 +1343,16 @@ impl App {
             if let Some(cur_idx) = self.current_track_idx {
                 if !self.queue.is_empty() {
                     if cur_idx + 1 < self.queue.len() {
-                        let next_idx = cur_idx + 1;
-                        if let Some(next_track) = self.queue.get(next_idx) {
-                            if self.prefetched_track_id.as_deref() != Some(&next_track.id) {
-                                self.prefetched_track_id = Some(next_track.id.clone());
-                                SearchEngine::prefetch_track(next_track, &self.search_engine.cached_client_id);
+                        if self.store.config.gapless_prefetch {
+                            let next_idx = cur_idx + 1;
+                            if let Some(next_track) = self.queue.get(next_idx) {
+                                if self.prefetched_track_id.as_deref() != Some(&next_track.id) {
+                                    self.prefetched_track_id = Some(next_track.id.clone());
+                                    SearchEngine::prefetch_track(next_track, &self.search_engine.cached_client_id);
+                                }
                             }
                         }
-                    } else if self.repeat == RepeatMode::Off && !self.shuffle {
+                    } else if self.repeat == RepeatMode::Off && !self.shuffle && self.store.config.auto_wave {
                         // Auto-Wave: prefetch related tracks when on the last track of queue at >= 80%
                         if (self.current_pos / self.total_duration) >= 0.80 {
                             if let Some(cur_track) = self.queue.get(cur_idx) {
@@ -1331,10 +1389,15 @@ impl App {
             if should_update {
                 self.last_rpc_update = Some(std::time::Instant::now());
                 if let Some(track) = self.current_track() {
+                    let btn_url = if self.store.config.discord_buttons {
+                        Some(track.url.clone())
+                    } else {
+                        None
+                    };
                     self.discord.update(
                         &track.title,
                         &track.artist,
-                        Some(track.url.clone()),
+                        btn_url,
                         track.artwork_url.clone(),
                         self.current_pos,
                         self.total_duration,

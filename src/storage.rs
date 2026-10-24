@@ -32,17 +32,42 @@ impl ThemeColor {
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub enum VisualStyle {
-    Tape,      // Smooth centered conveyor style like ttype
-    Minimal,   // Transparent airy layout
-    Blocky,    // Solid blocky cursor and indicators
+    Waveform, // Dynamic SoundCloud waveform peaks (▂▃▄▅▆▇█)
+    Tape,     // Smooth centered conveyor style (━━●──)
+    Minimal,  // Transparent airy layout (··◆  )
+    Blocky,   // Solid blocky cursor and indicators (██▓░░)
+    Braille,  // High-resolution braille spectrum (⣀⣤⣶⣿)
 }
 
 impl VisualStyle {
     pub fn name(&self) -> &'static str {
         match self {
-            VisualStyle::Tape => "tape",
-            VisualStyle::Minimal => "minimal",
-            VisualStyle::Blocky => "blocky",
+            VisualStyle::Waveform => "waveform (peaks)",
+            VisualStyle::Tape => "tape (━━●──)",
+            VisualStyle::Minimal => "minimal (··◆)",
+            VisualStyle::Blocky => "blocky (██▓░░)",
+            VisualStyle::Braille => "braille (⣀⣤⣶⣿)",
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub enum PitchMode {
+    Natural, // Pitch shifts naturally with speed (True Slowed / Nightcore)
+    Keep,    // Time-stretch keeping original vocal pitch
+}
+
+impl Default for PitchMode {
+    fn default() -> Self {
+        PitchMode::Natural
+    }
+}
+
+impl PitchMode {
+    pub fn name(&self) -> &'static str {
+        match self {
+            PitchMode::Natural => "natural (slowed / nightcore)",
+            PitchMode::Keep => "keep pitch (time-stretch)",
         }
     }
 }
@@ -86,8 +111,22 @@ pub struct HistoryEntry {
 pub struct Config {
     pub theme: ThemeColor,
     pub visual: VisualStyle,
+    #[serde(default = "default_true")]
+    pub show_bottom_hints: bool,
     pub default_volume: u32,
+    #[serde(default)]
+    pub pitch_mode: PitchMode,
+    #[serde(default = "default_true")]
+    pub auto_wave: bool,
+    #[serde(default = "default_true")]
+    pub resume_playback: bool,
+    #[serde(default = "default_true")]
+    pub gapless_prefetch: bool,
+    #[serde(default = "default_seek_step")]
+    pub seek_step: u32,
     pub discord_rpc: bool,
+    #[serde(default)]
+    pub discord_buttons: bool,
     pub discord_client_id: Option<String>,
     pub client_id: Option<String>,
     pub oauth_token: Option<String>,
@@ -95,13 +134,28 @@ pub struct Config {
     pub cookies_path: Option<String>,
 }
 
+fn default_true() -> bool {
+    true
+}
+
+fn default_seek_step() -> u32 {
+    5
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             theme: ThemeColor::Auto,
-            visual: VisualStyle::Tape,
+            visual: VisualStyle::Waveform,
+            show_bottom_hints: true,
             default_volume: 80,
+            pitch_mode: PitchMode::Natural,
+            auto_wave: true,
+            resume_playback: true,
+            gapless_prefetch: true,
+            seek_step: 5,
             discord_rpc: true,
+            discord_buttons: false,
             discord_client_id: None,
             client_id: None,
             oauth_token: None,
@@ -308,6 +362,41 @@ impl DataStore {
         } else {
             None
         }
+    }
+
+    pub fn cache_size_label() -> String {
+        let dir = Self::cache_dir();
+        let mut total_bytes: u64 = 0;
+        let mut count: usize = 0;
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                if let Ok(meta) = entry.metadata() {
+                    if meta.is_file() {
+                        total_bytes += meta.len();
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name.ends_with(".m4a") || name.ends_with(".mp3") {
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+        let mb = total_bytes as f64 / (1024.0 * 1024.0);
+        format!("{:.1} MB ({} tracks)", mb, count)
+    }
+
+    pub fn clear_audio_cache() -> usize {
+        let dir = Self::cache_dir();
+        let mut removed = 0;
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() && fs::remove_file(path).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+        removed
     }
 }
 
