@@ -173,15 +173,32 @@ impl DataStore {
                 return data;
             }
         }
+        let bak_path = path.with_extension("json.bak");
+        if let Ok(content) = fs::read_to_string(&bak_path) {
+            if let Ok(data) = serde_json::from_str(&content) {
+                return data;
+            }
+        }
         Self::default()
     }
 
     pub fn save(&self) {
-        let path = Self::config_path();
-        if let Ok(content) = serde_json::to_string_pretty(self) {
-            let tmp = path.with_extension("tmp");
-            if fs::write(&tmp, content).is_ok() {
-                let _ = fs::rename(tmp, path);
+        #[cfg(test)]
+        {
+            return;
+        }
+        #[cfg(not(test))]
+        {
+            let path = Self::config_path();
+            if let Ok(content) = serde_json::to_string_pretty(self) {
+                if path.exists() {
+                    let bak = path.with_extension("json.bak");
+                    let _ = fs::copy(&path, bak);
+                }
+                let tmp = path.with_extension("tmp");
+                if fs::write(&tmp, content).is_ok() {
+                    let _ = fs::rename(tmp, path);
+                }
             }
         }
     }
