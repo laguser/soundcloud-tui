@@ -1049,7 +1049,7 @@ impl App {
                     self.modal_artwork_input = Some((idx, existing_chars));
                 }
             }
-            KeyCode::Char('m') => {
+            KeyCode::Char('m') | KeyCode::Char('M') | KeyCode::Char('ь') | KeyCode::Char('Ь') => {
                 // Add highlighted track to one of saved playlists
                 let track = match self.view_mode {
                     ViewMode::Search => self.search_results.get(self.search_cursor).cloned(),
@@ -1070,9 +1070,9 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('l') => {
-                // Like / unlike current track
-                if let Some(track) = self.current_track().cloned() {
+            KeyCode::Char('l') | KeyCode::Char('L') | KeyCode::Char('д') | KeyCode::Char('Д') => {
+                // Like / unlike selected or currently playing track
+                if let Some(track) = self.selected_or_current_track() {
                     let liked = self.store.toggle_like(&track);
                     if liked {
                         self.set_status(&format!("Added to Favorites: {}", track.title));
@@ -1213,7 +1213,7 @@ impl App {
             KeyCode::Enter => {
                 self.play_selected_in_current_view();
             },
-            KeyCode::Char('a') => {
+            KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Char('ф') | KeyCode::Char('Ф') => {
                 // Add to queue
                 let track = match self.view_mode {
                     ViewMode::Search => self.search_results.get(self.search_cursor).cloned(),
@@ -1238,7 +1238,7 @@ impl App {
                     self.queue.push(t);
                 }
             }
-            KeyCode::Char('d') => {
+            KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Char('в') | KeyCode::Char('В') => {
                 // Remove from queue or favorites or playlists
                 if self.view_mode == ViewMode::Queue && !self.queue.is_empty() {
                     let removed = self.queue.remove(self.queue_cursor);
