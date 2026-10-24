@@ -18,6 +18,7 @@ pub enum PlayerEvent {
     PlaybackEnded,
     PlaybackError(String),
     FileLoaded,
+    Buffering(bool),
 }
 
 pub struct AudioPlayer {
@@ -56,10 +57,13 @@ impl AudioPlayer {
             .arg("--demuxer-lavf-o=allowed_extensions=ALL")
             .arg("--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_delay_max=4")
             .arg("--network-timeout=10")
-            .arg("--demuxer-readahead-secs=20")
+            .arg("--demuxer-max-bytes=150M")
+            .arg("--demuxer-max-back-bytes=100M")
+            .arg("--demuxer-readahead-secs=300")
             .arg("--cache=yes")
-            .arg("--cache-secs=30")
-            .arg("--audio-buffer=0.5")
+            .arg("--cache-secs=300")
+            .arg("--cache-pause=no")
+            .arg("--stream-buffer-size=512k")
             .arg(format!("--input-ipc-server={}", ipc_path))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -112,6 +116,7 @@ impl AudioPlayer {
             r#"{"command": ["observe_property", 3, "pause"]}"#,
             r#"{"command": ["observe_property", 4, "idle-active"]}"#,
             r#"{"command": ["observe_property", 5, "volume"]}"#,
+            r#"{"command": ["observe_property", 6, "paused-for-cache"]}"#,
         ];
 
         for obs in observes {
@@ -172,6 +177,11 @@ impl AudioPlayer {
                         "volume" => {
                             if let Some(vol) = v.get("data").and_then(|d| d.as_f64()) {
                                 let _ = tx.send(PlayerEvent::Volume(vol));
+                            }
+                        }
+                        "paused-for-cache" => {
+                            if let Some(buffering) = v.get("data").and_then(|d| d.as_bool()) {
+                                let _ = tx.send(PlayerEvent::Buffering(buffering));
                             }
                         }
                         _ => {}

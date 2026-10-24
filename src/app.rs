@@ -1577,6 +1577,12 @@ impl App {
                 }
                 crate::audio::PlayerEvent::Duration(dur) => self.total_duration = dur,
                 crate::audio::PlayerEvent::Paused(p) => self.is_paused = p,
+                crate::audio::PlayerEvent::Buffering(b) => {
+                    if b {
+                        let title = self.current_track().map(|t| t.title.clone()).unwrap_or_default();
+                        self.set_status(&format!("Buffering: {}", title));
+                    }
+                }
                 crate::audio::PlayerEvent::Volume(v) => self.volume = v as u32,
                 crate::audio::PlayerEvent::PlaybackEnded => {
                     let cur_id = self.current_track().map(|t| t.id.clone());

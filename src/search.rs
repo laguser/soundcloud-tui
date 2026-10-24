@@ -245,11 +245,6 @@ impl SearchEngine {
         // Fast-path: if track already points to a YouTube query or non-soundcloud URL, resolve via yt-dlp directly
         if track.url.starts_with("ytsearch") || (track.url.starts_with("http") && !track.url.contains("soundcloud.com")) {
             if let Some(stream) = Self::resolve_youtube_direct(&track.url) {
-                let track_id_clean = track.id.clone();
-                let stream_copy = stream.clone();
-                thread::spawn(move || {
-                    Self::download_to_cache(&track_id_clean, &stream_copy);
-                });
                 return Some(stream);
             }
         }
@@ -330,11 +325,6 @@ impl SearchEngine {
                     if let Ok(mut g) = client_id_holder.lock() {
                         *g = Some(cid.to_string());
                     }
-                    let track_id_clean = track.id.clone();
-                    let stream_copy = playable.clone();
-                    thread::spawn(move || {
-                        Self::download_to_cache(&track_id_clean, &stream_copy);
-                    });
                     return Some(playable);
                 }
             }
@@ -373,11 +363,6 @@ impl SearchEngine {
                                             if let Ok(mut g) = client_id_holder.lock() {
                                                 *g = Some(cid.to_string());
                                             }
-                                            let track_id_clean = track.id.clone();
-                                            let stream_copy = playable.clone();
-                                            thread::spawn(move || {
-                                                Self::download_to_cache(&track_id_clean, &stream_copy);
-                                            });
                                             return Some(playable);
                                         }
                                     }
@@ -406,11 +391,6 @@ impl SearchEngine {
                     if let Ok(mut g) = client_id_holder.lock() {
                         *g = Some(cid.to_string());
                     }
-                    let track_id_clean = track.id.clone();
-                    let stream_copy = playable.clone();
-                    thread::spawn(move || {
-                        Self::download_to_cache(&track_id_clean, &stream_copy);
-                    });
                     return Some(playable);
                 }
             } else if let Some(trans_url) = &track.stream_url {
@@ -447,11 +427,6 @@ impl SearchEngine {
                                             if let Ok(mut g) = client_id_holder.lock() {
                                                 *g = Some(cid.to_string());
                                             }
-                                            let track_id_clean = track.id.clone();
-                                            let stream_copy = playable.clone();
-                                            thread::spawn(move || {
-                                                Self::download_to_cache(&track_id_clean, &stream_copy);
-                                            });
                                             return Some(playable);
                                         }
                                     }
@@ -467,11 +442,6 @@ impl SearchEngine {
         // 5. Final fallback: resolve direct media URL via yt-dlp ONLY IF not soundcloud.com
         if !track.url.is_empty() && !track.url.contains("soundcloud.com") && (track.url.starts_with("http") || track.url.starts_with("ytsearch")) {
             if let Some(stream) = Self::resolve_youtube_direct(&track.url) {
-                let track_id_clean = track.id.clone();
-                let stream_copy = stream.clone();
-                thread::spawn(move || {
-                    Self::download_to_cache(&track_id_clean, &stream_copy);
-                });
                 return Some(stream);
             }
         }
@@ -487,11 +457,6 @@ impl SearchEngine {
             };
             let yt_query = format!("ytsearch1:{}", query);
             if let Some(stream) = Self::resolve_youtube_direct(&yt_query) {
-                let track_id_clean = track.id.clone();
-                let stream_copy = stream.clone();
-                thread::spawn(move || {
-                    Self::download_to_cache(&track_id_clean, &stream_copy);
-                });
                 return Some(stream);
             }
         }
@@ -499,8 +464,14 @@ impl SearchEngine {
         None
     }
 
+    #[allow(dead_code)]
     fn download_to_cache(track_id: &str, stream_url: &str) {
-        if track_id.is_empty() || stream_url.contains("cenc") || stream_url.contains("drm") {
+        if track_id.is_empty()
+            || stream_url.contains("googlevideo")
+            || stream_url.contains("youtube")
+            || stream_url.contains("cenc")
+            || stream_url.contains("drm")
+        {
             return;
         }
         // Wait 6s so mpv gets 100% network priority to start playback and fill its read-ahead buffer first
