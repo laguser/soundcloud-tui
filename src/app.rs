@@ -129,6 +129,7 @@ pub struct App {
 
     pub stream_resolve_tx: std::sync::mpsc::Sender<StreamResolveEvent>,
     pub stream_resolve_rx: std::sync::mpsc::Receiver<StreamResolveEvent>,
+    pub fallback_tried_track_ids: std::collections::HashSet<String>,
 
     pub status_message: Option<(String, Instant)>,
     pub last_esc_press: Option<Instant>,
@@ -199,6 +200,7 @@ impl App {
 
             stream_resolve_tx,
             stream_resolve_rx,
+            fallback_tried_track_ids: std::collections::HashSet::new(),
 
             is_paused: false,
             current_pos: 0.0,
@@ -270,6 +272,7 @@ impl App {
         self.is_paused = false;
         self.total_duration = track.duration;
         self.prefetched_track_id = None;
+        self.player.ensure_running();
 
         // Restore saved position and speed for this track if remembered
         if self.store.config.resume_playback {
@@ -1524,19 +1527,17 @@ impl App {
                 StreamResolveEvent::Resolved { track_id, url, source } => {
                     // Only apply if this is still the active track
                     if self.current_track().map(|t| t.id == track_id).unwrap_or(false) {
+                        self.player.ensure_running();
                         self.player.play(&url);
                         if self.current_speed != 1.0 {
                             self.player.set_speed(self.current_speed);
                         }
-                        if self.is_paused {
-                            self.player.set_pause(true);
-                        }
+                        self.is_paused = false;
                         let title = self.current_track().map(|t| t.title.clone()).unwrap_or_default();
-                        if let Some(pos) = self.pending_resume_pos.take() {
-                            self.player.seek_to(pos);
-                            self.set_status(&format!("Resumed at {}: {}", crate::ui::format_duration(pos), title));
+                        let label = if source == "direct" { "Streaming" } else { "Streaming (YouTube fallback)" };
+                        if let Some(pos) = self.pending_resume_pos {
+                            self.set_status(&format!("{}: {} (resuming at {})", label, title, crate::ui::format_duration(pos)));
                         } else {
-                            let label = if source == "direct" { "Streaming" } else { "Streaming (ytdl)" };
                             self.set_status(&format!("{}: {}", label, title));
                         }
                     }
@@ -1595,6 +1596,35 @@ impl App {
                         if let Some(cached) = crate::storage::DataStore::get_cached_track_path(&track.id) {
                             let _ = std::fs::remove_file(cached);
                             self.play_track(track);
+                            continue;
+                        }
+                        if !self.fallback_tried_track_ids.contains(&track.id) {
+                            self.fallback_tried_track_ids.insert(track.id.clone());
+                            self.set_status(&format!("Switching to YouTube audio fallback: {}", track.title));
+                            let tx = self.stream_resolve_tx.clone();
+                            let track_clone = track.clone();
+                            std::thread::spawn(move || {
+                                let clean_title = track_clone.title.trim();
+                                let clean_artist = track_clone.artist.trim();
+                                let query = if clean_artist.is_empty() || clean_title.to_lowercase().contains(&clean_artist.to_lowercase()) {
+                                    clean_title.to_string()
+                                } else {
+                                    format!("{} {}", clean_artist, clean_title)
+                                };
+                                let yt_query = format!("ytsearch1:{}", query);
+                                if let Some(resolved) = crate::search::SearchEngine::resolve_youtube_direct(&yt_query) {
+                                    let _ = tx.send(StreamResolveEvent::Resolved {
+                                        track_id: track_clone.id,
+                                        url: resolved,
+                                        source: "ytdl",
+                                    });
+                                } else {
+                                    let _ = tx.send(StreamResolveEvent::Failed {
+                                        track_id: track_clone.id,
+                                        title: track_clone.title,
+                                    });
+                                }
+                            });
                             continue;
                         }
                     }

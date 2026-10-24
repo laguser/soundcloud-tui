@@ -133,8 +133,10 @@ impl SearchEngine {
         let mime = tr.get("format").and_then(|f| f.get("mime_type")).and_then(|m| m.as_str()).unwrap_or("");
         let snipped = tr.get("snipped").and_then(|s| s.as_bool()).unwrap_or(false);
 
-        // Completely reject DRM / CENC / PlayReady / Widevine / encrypted streams
+        // Completely reject snippets (previews) and DRM / CENC / PlayReady / Widevine / encrypted streams
         if snipped
+            || url.contains("/preview/")
+            || preset.contains("preview")
             || url.contains("/cenc/")
             || url.contains("cenc")
             || preset.contains("cenc")
@@ -213,10 +215,43 @@ impl SearchEngine {
         out
     }
 
+    pub fn resolve_youtube_direct(query_or_url: &str) -> Option<String> {
+        let ytdl_out = Command::new("yt-dlp")
+            .arg("-4")
+            .arg("-g")
+            .arg("-f")
+            .arg("http_mp3_1_0/hls_mp3_1_0/hls_opus_0_0/bestaudio/best")
+            .arg("--no-playlist")
+            .arg("--no-warnings")
+            .arg(query_or_url)
+            .output()
+            .ok()?;
+
+        if ytdl_out.status.success() {
+            let resolved = String::from_utf8_lossy(&ytdl_out.stdout).lines().next().unwrap_or("").trim().to_string();
+            if resolved.starts_with("http") {
+                return Some(resolved);
+            }
+        }
+        None
+    }
+
     pub fn resolve_stream_url(track: &TrackItem, client_id_holder: &Arc<Mutex<Option<String>>>) -> Option<String> {
         // 1. Check local on-disk cache first
         if let Some(cached_file) = crate::storage::DataStore::get_cached_track_path(&track.id) {
             return Some(cached_file.to_string_lossy().to_string());
+        }
+
+        // Fast-path: if track already points to a YouTube query or non-soundcloud URL, resolve via yt-dlp directly
+        if track.url.starts_with("ytsearch") || (track.url.starts_with("http") && !track.url.contains("soundcloud.com")) {
+            if let Some(stream) = Self::resolve_youtube_direct(&track.url) {
+                let track_id_clean = track.id.clone();
+                let stream_copy = stream.clone();
+                thread::spawn(move || {
+                    Self::download_to_cache(&track_id_clean, &stream_copy);
+                });
+                return Some(stream);
+            }
         }
 
         let initial_cid = {
@@ -246,7 +281,7 @@ impl SearchEngine {
             let stream_res = Command::new("curl")
                 .arg("-s")
                 .arg("-m")
-                .arg("4")
+                .arg("3")
                 .arg("-H")
                 .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
                 .arg(&stream_lookup)
@@ -257,7 +292,25 @@ impl SearchEngine {
                 if let Ok(sv) = serde_json::from_slice::<serde_json::Value>(&stream_res.stdout) {
                     if let Some(direct_url) = sv.get("url").and_then(|u| u.as_str()) {
                         if !direct_url.contains("cenc") && !direct_url.contains("drm") {
-                            return Some(direct_url.to_string());
+                            // Quick stream accessibility verification (rejects CloudFront 403 Forbidden / errors)
+                            let mut chk_cmd = Command::new("curl");
+                            chk_cmd.arg("-s")
+                                .arg("-m")
+                                .arg("2")
+                                .arg("-H")
+                                .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0");
+                            if !direct_url.contains(".m3u8") {
+                                chk_cmd.arg("-r").arg("0-64");
+                            }
+                            chk_cmd.arg(direct_url);
+                            if let Ok(chk) = chk_cmd.output() {
+                                if chk.status.success() && !chk.stdout.is_empty() {
+                                    let head = String::from_utf8_lossy(&chk.stdout[..chk.stdout.len().min(60)]);
+                                    if !head.contains("Forbidden") && !head.contains("<Error") {
+                                        return Some(direct_url.to_string());
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -296,7 +349,7 @@ impl SearchEngine {
                 let output = Command::new("curl")
                     .arg("-s")
                     .arg("-m")
-                    .arg("4")
+                    .arg("3")
                     .arg("-H")
                     .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
                     .arg(&api_url)
@@ -306,22 +359,32 @@ impl SearchEngine {
                 if let Some(out) = output {
                     if out.status.success() {
                         if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
-                            let auth = v.get("track_authorization").and_then(|a| a.as_str());
-                            if let Some(transcodings) = v.get("media").and_then(|m| m.get("transcodings")).and_then(|t| t.as_array()) {
-                                let ordered = Self::get_ordered_transcodings(transcodings);
-                                for tr_url in ordered {
-                                    if let Some(playable) = try_resolve(tr_url, cid, auth) {
-                                        if let Ok(mut g) = client_id_holder.lock() {
-                                            *g = Some(cid.to_string());
+                            if v.is_object() {
+                                let policy = v.get("policy").and_then(|p| p.as_str()).unwrap_or("");
+                                if policy == "BLOCK" || policy == "SNIP" {
+                                    // Track is blocked or 30s snippet only on SoundCloud; break out and use YouTube fallback!
+                                    break;
+                                }
+                                let auth = v.get("track_authorization").and_then(|a| a.as_str());
+                                if let Some(transcodings) = v.get("media").and_then(|m| m.get("transcodings")).and_then(|t| t.as_array()) {
+                                    let ordered = Self::get_ordered_transcodings(transcodings);
+                                    for tr_url in ordered {
+                                        if let Some(playable) = try_resolve(tr_url, cid, auth) {
+                                            if let Ok(mut g) = client_id_holder.lock() {
+                                                *g = Some(cid.to_string());
+                                            }
+                                            let track_id_clean = track.id.clone();
+                                            let stream_copy = playable.clone();
+                                            thread::spawn(move || {
+                                                Self::download_to_cache(&track_id_clean, &stream_copy);
+                                            });
+                                            return Some(playable);
                                         }
-                                        let track_id_clean = track.id.clone();
-                                        let stream_copy = playable.clone();
-                                        thread::spawn(move || {
-                                            Self::download_to_cache(&track_id_clean, &stream_copy);
-                                        });
-                                        return Some(playable);
                                     }
                                 }
+                                // If CID successfully retrieved the track from SC API, but transcodings failed or are unplayable,
+                                // trying other CIDs will not help CloudFront CDN signatures. Break and fallback to YouTube!
+                                break;
                             }
                         }
                     }
@@ -356,8 +419,8 @@ impl SearchEngine {
                 }
             }
 
-            // 4. Fallback to /resolve?url={track.url}&client_id={cid}
-            if !track.url.is_empty() && track.url.starts_with("http") && track.url.contains("soundcloud.com") {
+            // 4. Fallback to /resolve?url={track.url}&client_id={cid} only if track.id was empty
+            if track.id.is_empty() && !track.url.is_empty() && track.url.starts_with("http") && track.url.contains("soundcloud.com") {
                 let resolve_url = format!(
                     "https://api-v2.soundcloud.com/resolve?url={}&client_id={}",
                     track.url, cid
@@ -365,7 +428,7 @@ impl SearchEngine {
                 let output = Command::new("curl")
                     .arg("-s")
                     .arg("-m")
-                    .arg("4")
+                    .arg("3")
                     .arg("-H")
                     .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
                     .arg(&resolve_url)
@@ -375,22 +438,25 @@ impl SearchEngine {
                 if let Some(out) = output {
                     if out.status.success() {
                         if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
-                            let auth = v.get("track_authorization").and_then(|a| a.as_str());
-                            if let Some(transcodings) = v.get("media").and_then(|m| m.get("transcodings")).and_then(|t| t.as_array()) {
-                                let ordered = Self::get_ordered_transcodings(transcodings);
-                                for tr_url in ordered {
-                                    if let Some(playable) = try_resolve(tr_url, cid, auth) {
-                                        if let Ok(mut g) = client_id_holder.lock() {
-                                            *g = Some(cid.to_string());
+                            if v.is_object() {
+                                let auth = v.get("track_authorization").and_then(|a| a.as_str());
+                                if let Some(transcodings) = v.get("media").and_then(|m| m.get("transcodings")).and_then(|t| t.as_array()) {
+                                    let ordered = Self::get_ordered_transcodings(transcodings);
+                                    for tr_url in ordered {
+                                        if let Some(playable) = try_resolve(tr_url, cid, auth) {
+                                            if let Ok(mut g) = client_id_holder.lock() {
+                                                *g = Some(cid.to_string());
+                                            }
+                                            let track_id_clean = track.id.clone();
+                                            let stream_copy = playable.clone();
+                                            thread::spawn(move || {
+                                                Self::download_to_cache(&track_id_clean, &stream_copy);
+                                            });
+                                            return Some(playable);
                                         }
-                                        let track_id_clean = track.id.clone();
-                                        let stream_copy = playable.clone();
-                                        thread::spawn(move || {
-                                            Self::download_to_cache(&track_id_clean, &stream_copy);
-                                        });
-                                        return Some(playable);
                                     }
                                 }
+                                break;
                             }
                         }
                     }
@@ -398,26 +464,15 @@ impl SearchEngine {
             }
         }
 
-        // 5. Final fallback: resolve direct media URL via yt-dlp (preferring HTTP MP3/Opus over fMP4/HLS)
-        if !track.url.is_empty() && (track.url.starts_with("http") || track.url.starts_with("ytsearch")) {
-            let ytdl_out = Command::new("yt-dlp")
-                .arg("-4")
-                .arg("-g")
-                .arg("-f")
-                .arg("http_mp3_1_0/hls_mp3_1_0/hls_opus_0_0/bestaudio/best")
-                .arg("--no-playlist")
-                .arg("--no-warnings")
-                .arg(&track.url)
-                .output()
-                .ok();
-
-            if let Some(out) = ytdl_out {
-                if out.status.success() {
-                    let resolved = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").trim().to_string();
-                    if resolved.starts_with("http") {
-                        return Some(resolved);
-                    }
-                }
+        // 5. Final fallback: resolve direct media URL via yt-dlp ONLY IF not soundcloud.com
+        if !track.url.is_empty() && !track.url.contains("soundcloud.com") && (track.url.starts_with("http") || track.url.starts_with("ytsearch")) {
+            if let Some(stream) = Self::resolve_youtube_direct(&track.url) {
+                let track_id_clean = track.id.clone();
+                let stream_copy = stream.clone();
+                thread::spawn(move || {
+                    Self::download_to_cache(&track_id_clean, &stream_copy);
+                });
+                return Some(stream);
             }
         }
 
@@ -425,30 +480,19 @@ impl SearchEngine {
         let clean_title = track.title.trim();
         let clean_artist = track.artist.trim();
         if !clean_title.is_empty() {
-            let yt_query = format!("ytsearch1:{} {}", clean_artist, clean_title);
-            let ytdl_out = Command::new("yt-dlp")
-                .arg("-4")
-                .arg("-g")
-                .arg("-f")
-                .arg("http_mp3_1_0/hls_mp3_1_0/hls_opus_0_0/bestaudio/best")
-                .arg("--no-playlist")
-                .arg("--no-warnings")
-                .arg(&yt_query)
-                .output()
-                .ok();
-
-            if let Some(out) = ytdl_out {
-                if out.status.success() {
-                    let resolved = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").trim().to_string();
-                    if resolved.starts_with("http") {
-                        let track_id_clean = track.id.clone();
-                        let stream_copy = resolved.clone();
-                        thread::spawn(move || {
-                            Self::download_to_cache(&track_id_clean, &stream_copy);
-                        });
-                        return Some(resolved);
-                    }
-                }
+            let query = if clean_artist.is_empty() || clean_title.to_lowercase().contains(&clean_artist.to_lowercase()) {
+                clean_title.to_string()
+            } else {
+                format!("{} {}", clean_artist, clean_title)
+            };
+            let yt_query = format!("ytsearch1:{}", query);
+            if let Some(stream) = Self::resolve_youtube_direct(&yt_query) {
+                let track_id_clean = track.id.clone();
+                let stream_copy = stream.clone();
+                thread::spawn(move || {
+                    Self::download_to_cache(&track_id_clean, &stream_copy);
+                });
+                return Some(stream);
             }
         }
 
@@ -1769,5 +1813,80 @@ mod tests {
         assert_eq!(ordered[2], "https://api-v2.soundcloud.com/media/3/abr_sq/stream/hls");
         // cenc was completely rejected
         assert!(!ordered.iter().any(|u| u.contains("cenc")));
+    }
+
+    #[test]
+    fn test_snipped_and_preview_rejection() {
+        let trans = serde_json::json!([
+            {
+                "url": "https://api-v2.soundcloud.com/media/1/preview/hls",
+                "preset": "preview_mp3",
+                "format": { "protocol": "hls", "mime_type": "audio/mpeg" },
+                "quality": "sq",
+                "snipped": true
+            },
+            {
+                "url": "https://api-v2.soundcloud.com/media/2/stream/hls",
+                "preset": "mp3_1_0",
+                "format": { "protocol": "hls", "mime_type": "audio/mpeg" },
+                "quality": "sq",
+                "snipped": true
+            },
+            {
+                "url": "https://api-v2.soundcloud.com/media/3/stream/progressive",
+                "preset": "mp3_1_0",
+                "format": { "protocol": "progressive", "mime_type": "audio/mpeg" },
+                "quality": "sq",
+                "snipped": false
+            }
+        ]);
+        let trans_arr = trans.as_array().unwrap();
+        let ordered = SearchEngine::get_ordered_transcodings(trans_arr);
+        assert_eq!(ordered.len(), 1);
+        assert_eq!(ordered[0], "https://api-v2.soundcloud.com/media/3/stream/progressive");
+    }
+
+    #[test]
+    #[ignore]
+    fn test_live_resolve_broken_sc_and_snippet() {
+        let cid_holder = Arc::new(Mutex::new(Some("QhVEWrrJKvW4uSU5u5EoI0FTXYUGzy5k".to_string())));
+
+        // 1. madk1d - Давно (uncached: SoundCloud CDN 403 -> falls back to YouTube)
+        let track1 = TrackItem {
+            id: "fake_non_cached_madk1d".to_string(),
+            title: "madk1d - Давно".to_string(),
+            artist: "staffkarp".to_string(),
+            duration: 98.476,
+            url: "https://soundcloud.com/scragu/madk1d-davno".to_string(),
+            stream_url: None,
+            artwork_url: None,
+            waveform_url: None,
+            user_permalink: None,
+            user_id: None,
+        };
+        let stream1 = SearchEngine::resolve_stream_url(&track1, &cid_holder);
+        println!("Stream 1 (madk1d uncached): {:?}", stream1.as_ref().map(|s| &s[..50.min(s.len())]));
+        assert!(stream1.is_some());
+        let s1 = stream1.unwrap();
+        assert!(s1.starts_with("http"));
+
+        // 2. Radiohead - Creep (SoundCloud 30s snippet -> falls back to YouTube full audio)
+        let track2 = TrackItem {
+            id: "265069081".to_string(),
+            title: "Creep".to_string(),
+            artist: "Radiohead".to_string(),
+            duration: 238.0,
+            url: "https://soundcloud.com/radiohead/creep".to_string(),
+            stream_url: None,
+            artwork_url: None,
+            waveform_url: None,
+            user_permalink: None,
+            user_id: None,
+        };
+        let stream2 = SearchEngine::resolve_stream_url(&track2, &cid_holder);
+        println!("Stream 2 (Creep): {:?}", stream2.as_ref().map(|s| &s[..50.min(s.len())]));
+        assert!(stream2.is_some());
+        let s2 = stream2.unwrap();
+        assert!(s2.starts_with("http"));
     }
 }

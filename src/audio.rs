@@ -120,10 +120,13 @@ impl AudioPlayer {
         let _ = stream_writer.flush();
 
         // Spawn dedicated command writer on the persistent stream
+        let running_writer = Arc::clone(&is_running);
         thread::spawn(move || {
             while let Ok(cmd) = cmd_rx.recv() {
-                let _ = writeln!(stream_writer, "{}", cmd);
-                let _ = stream_writer.flush();
+                if writeln!(stream_writer, "{}", cmd).is_err() || stream_writer.flush().is_err() {
+                    running_writer.store(false, Ordering::SeqCst);
+                    break;
+                }
             }
         });
 
@@ -178,19 +181,35 @@ impl AudioPlayer {
         }
     }
 
+    pub fn ensure_running(&mut self) {
+        if !self.is_running.load(Ordering::SeqCst) {
+            let old_ipc = self.ipc_path.clone();
+            *self = Self::new();
+            let _ = std::fs::remove_file(old_ipc);
+        }
+    }
+
     pub fn send_command(&self, cmd: &str) {
         let _ = self.cmd_tx.send(cmd.to_string());
     }
 
     pub fn play(&self, url: &str) {
-        let msg = format!(r#"{{"command": ["loadfile", "{}", "replace"]}}"#, url);
-        self.send_command(&msg);
+        let cmd = serde_json::json!({
+            "command": ["loadfile", url, "replace"]
+        });
+        if let Ok(msg) = serde_json::to_string(&cmd) {
+            self.send_command(&msg);
+        }
         self.send_command(r#"{"command": ["set_property", "pause", false]}"#);
     }
 
     pub fn set_pause(&self, paused: bool) {
-        let msg = format!(r#"{{"command": ["set_property", "pause", {}]}}"#, paused);
-        self.send_command(&msg);
+        let cmd = serde_json::json!({
+            "command": ["set_property", "pause", paused]
+        });
+        if let Ok(msg) = serde_json::to_string(&cmd) {
+            self.send_command(&msg);
+        }
     }
 
     #[allow(dead_code)]
@@ -200,34 +219,57 @@ impl AudioPlayer {
     }
 
     pub fn seek(&self, seconds: f64) {
-        let msg = format!(r#"{{"command": ["seek", {}, "relative"]}}"#, seconds);
-        self.send_command(&msg);
+        let cmd = serde_json::json!({
+            "command": ["seek", seconds, "relative"]
+        });
+        if let Ok(msg) = serde_json::to_string(&cmd) {
+            self.send_command(&msg);
+        }
     }
 
     pub fn seek_to(&self, seconds: f64) {
-        let msg = format!(r#"{{"command": ["seek", {:.2}, "absolute"]}}"#, seconds);
-        self.send_command(&msg);
+        let cmd = serde_json::json!({
+            "command": ["seek", seconds, "absolute"]
+        });
+        if let Ok(msg) = serde_json::to_string(&cmd) {
+            self.send_command(&msg);
+        }
     }
 
     pub fn set_speed(&self, speed: f64) {
-        let msg = format!(r#"{{"command": ["set_property", "speed", {:.3}]}}"#, speed);
-        self.send_command(&msg);
+        let cmd = serde_json::json!({
+            "command": ["set_property", "speed", speed]
+        });
+        if let Ok(msg) = serde_json::to_string(&cmd) {
+            self.send_command(&msg);
+        }
     }
 
     pub fn set_pitch_correction(&self, keep_pitch: bool) {
-        let val = if keep_pitch { "true" } else { "false" };
-        let msg = format!(r#"{{"command": ["set_property", "audio-pitch-correction", {}]}}"#, val);
-        self.send_command(&msg);
+        let cmd = serde_json::json!({
+            "command": ["set_property", "audio-pitch-correction", keep_pitch]
+        });
+        if let Ok(msg) = serde_json::to_string(&cmd) {
+            self.send_command(&msg);
+        }
     }
 
     pub fn set_audio_filter(&self, filter_str: &str) {
-        let msg = format!(r#"{{"command": ["set_property", "af", "{}"]}}"#, filter_str);
-        self.send_command(&msg);
+        let cmd = serde_json::json!({
+            "command": ["set_property", "af", filter_str]
+        });
+        if let Ok(msg) = serde_json::to_string(&cmd) {
+            self.send_command(&msg);
+        }
     }
 
     pub fn set_volume(&self, vol: f64) {
-        let msg = format!(r#"{{"command": ["set_property", "volume", {}]}}"#, vol);
-        self.send_command(&msg);
+        let cmd = serde_json::json!({
+            "command": ["set_property", "volume", vol]
+        });
+        if let Ok(msg) = serde_json::to_string(&cmd) {
+            self.send_command(&msg);
+        }
     }
 
     pub fn poll_event(&self) -> Option<PlayerEvent> {
