@@ -52,12 +52,13 @@ sudo apt install mpv yt-dlp
 
 #### Pacman / Arch Linux (AUR)
 ```bash
-# Using an AUR helper (paru / yay):
+# Prebuilt binary (instant install, no Rust compilation required):
+paru -S sctui-bin
+# Or using yay:
+yay -S sctui-bin
+
+# Build latest git from source:
 paru -S soundcloud-tui-git
-# Or build locally from PKGBUILD:
-git clone https://github.com/laguser/soundcloud-tui.git
-cd soundcloud-tui
-makepkg -si
 ```
 
 #### Via Cargo (Recommended)
@@ -129,13 +130,13 @@ sudo pacman -S mpv yt-dlp
 
 #### Через Pacman / AUR (Arch Linux):
 ```bash
-# Через AUR-хелпер (paru / yay):
-paru -S soundcloud-tui-git
+# Готовый бинарник (мгновенная установка без компиляции Rust):
+paru -S sctui-bin
+# Или через yay:
+yay -S sctui-bin
 
-# Или сборка из репозитория:
-git clone https://github.com/laguser/soundcloud-tui.git
-cd soundcloud-tui
-makepkg -si
+# Сборка из git-исходников:
+paru -S soundcloud-tui-git
 ```
 
 #### Через Cargo:

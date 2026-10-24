@@ -1,0 +1,24 @@
+# Maintainer: laguser <laguser@users.noreply.github.com>
+pkgname=sctui-bin
+pkgver=0.2.9
+pkgrel=1
+pkgdesc="Minimalist terminal SoundCloud & YouTube player for Linux in Rust (prebuilt binary, MPRIS2, Discord RPC, Synced Lyrics)"
+arch=('x86_64')
+url="https://github.com/laguser/soundcloud-tui"
+license=('MIT')
+depends=('mpv' 'dbus' 'curl')
+optdepends=(
+    'yt-dlp: Fallback stream & playlist extraction'
+    'ffmpeg: Lossless background track caching'
+)
+provides=('sctui' 'soundcloud-tui')
+conflicts=('sctui' 'soundcloud-tui' 'soundcloud-tui-git')
+source_x86_64=("sctui-${pkgver}-x86_64.tar.gz::https://github.com/laguser/soundcloud-tui/releases/download/v${pkgver}/sctui-${pkgver}-x86_64.tar.gz")
+sha256sums_x86_64=('767139cdaaec1b7056f902f9f6454a09c8acd66e2c978c21c1601f8f197dfa2b')
+
+package() {
+    install -Dm755 "${srcdir}/sctui" "${pkgdir}/usr/bin/sctui"
+    ln -sf "/usr/bin/sctui" "${pkgdir}/usr/bin/soundcloud-tui"
+    install -Dm644 "${srcdir}/README.md" "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+    install -Dm644 "${srcdir}/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

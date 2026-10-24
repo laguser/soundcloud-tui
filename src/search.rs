@@ -125,24 +125,26 @@ impl SearchEngine {
         }
 
         let mut pts = 0;
-        // Progressive MP3 is fast, seeking without re-requesting manifests
+        // Progressive MP3 is fastest and never uses segmented fMP4/HLS
         if proto == "progressive" {
-            pts += 1000;
+            pts += 1500;
         } else if proto == "hls" {
             pts += 200;
         }
 
-        // Preset scoring: AAC 160k is highest quality unencrypted stream
-        if preset.contains("aac_160") || preset.contains("160k") {
-            pts += 700;
-        } else if preset.contains("opus") {
+        // Prioritize unencrypted MP3 (audio/mpeg) and Opus (audio/ogg) over fMP4 AAC (audio/mp4),
+        // because SoundCloud often puts SAMPLE-AES-CTR (CENC DRM) inside audio/mp4 m3u8 manifests
+        // without marking "cenc" in the transcoding metadata, which freezes after ~0.8s.
+        if preset.contains("mp3") || (mime.contains("audio/mpeg") && !mime.contains("mpegurl")) {
+            pts += 900;
+        } else if preset.contains("opus") || mime.contains("ogg") || mime.contains("opus") {
+            pts += 800;
+        } else if preset.contains("aac_160") || preset.contains("160k") {
             pts += 600;
-        } else if preset.contains("mp3") {
-            pts += 500;
         } else if preset.contains("aac_96") || preset.contains("96k") {
-            pts += 400;
+            pts += 500;
         } else if preset.contains("aac") {
-            pts += 300;
+            pts += 400;
         }
 
         if quality == "sq" {
@@ -174,6 +176,20 @@ impl SearchEngine {
         Self::get_ordered_transcodings(transcodings).first().copied()
     }
 
+    fn url_encode(input: &str) -> String {
+        let mut out = String::with_capacity(input.len() * 3);
+        for b in input.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    out.push(b as char);
+                }
+                b' ' => out.push_str("%20"),
+                _ => out.push_str(&format!("%{:02X}", b)),
+            }
+        }
+        out
+    }
+
     pub fn resolve_stream_url(track: &TrackItem, client_id_holder: &Arc<Mutex<Option<String>>>) -> Option<String> {
         // 1. Check local on-disk cache first
         if let Some(cached_file) = crate::storage::DataStore::get_cached_track_path(&track.id) {
@@ -195,14 +211,6 @@ impl SearchEngine {
             candidate_cids.push("tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ");
         }
 
-        let make_playable = |raw_url: &str| -> String {
-            if (raw_url.contains("stream/hls") || raw_url.contains("playlist") || raw_url.contains("hls")) && !raw_url.contains(".m3u8") {
-                format!("{}#dummy.m3u8", raw_url)
-            } else {
-                raw_url.to_string()
-            }
-        };
-
         let try_resolve = |trans_url: &str, cid: &str, auth: Option<&str>| -> Option<String> {
             let sep = if trans_url.contains('?') { "&" } else { "?" };
             let mut stream_lookup = format!("{}{sep}client_id={}", trans_url, cid);
@@ -215,7 +223,7 @@ impl SearchEngine {
             let stream_res = Command::new("curl")
                 .arg("-s")
                 .arg("-m")
-                .arg("3")
+                .arg("4")
                 .arg("-H")
                 .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
                 .arg(&stream_lookup)
@@ -226,7 +234,7 @@ impl SearchEngine {
                 if let Ok(sv) = serde_json::from_slice::<serde_json::Value>(&stream_res.stdout) {
                     if let Some(direct_url) = sv.get("url").and_then(|u| u.as_str()) {
                         if !direct_url.contains("cenc") && !direct_url.contains("drm") {
-                            return Some(make_playable(direct_url));
+                            return Some(direct_url.to_string());
                         }
                     }
                 }
@@ -235,16 +243,12 @@ impl SearchEngine {
         };
 
         for cid in candidate_cids {
-            // 1. Try saved stream_url if present
-            let has_valid_unencrypted_trans = track.stream_url.as_ref().map(|u| {
-                u.contains("api-v2.soundcloud.com/media")
-                    && !u.contains("cbc")
-                    && !u.contains("cenc")
-                    && !u.contains("encrypted")
-                    && !u.contains("drm")
+            // 1. If saved stream_url is a direct progressive MP3 transcoding, try it immediately
+            let is_progressive_trans = track.stream_url.as_ref().map(|u| {
+                u.contains("api-v2.soundcloud.com/media") && u.contains("progressive")
             }).unwrap_or(false);
 
-            if has_valid_unencrypted_trans {
+            if is_progressive_trans {
                 let trans_url = track.stream_url.as_ref().unwrap();
                 if let Some(playable) = try_resolve(trans_url, cid, None) {
                     if let Ok(mut g) = client_id_holder.lock() {
@@ -257,13 +261,9 @@ impl SearchEngine {
                     });
                     return Some(playable);
                 }
-            } else if let Some(trans_url) = &track.stream_url {
-                if trans_url.starts_with("http") && !trans_url.contains("api-v2.soundcloud.com") && !trans_url.contains("cenc") && !trans_url.contains("encrypted") {
-                    return Some(make_playable(trans_url));
-                }
             }
 
-            // 2. Fresh track lookup via track ID (handles history, bookmarks, stale hashes, abr_sq fallbacks)
+            // 2. Fresh track lookup via track ID to get all transcodings + track_authorization
             if !track.id.is_empty() {
                 let api_url = format!(
                     "https://api-v2.soundcloud.com/tracks/{}?client_id={}",
@@ -273,7 +273,7 @@ impl SearchEngine {
                 let output = Command::new("curl")
                     .arg("-s")
                     .arg("-m")
-                    .arg("3")
+                    .arg("4")
                     .arg("-H")
                     .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
                     .arg(&api_url)
@@ -305,7 +305,35 @@ impl SearchEngine {
                 }
             }
 
-            // 3. Fallback to /resolve?url={track.url}&client_id={cid}
+            // 3. Fallback to saved stream_url if present and unencrypted
+            let has_valid_unencrypted_trans = track.stream_url.as_ref().map(|u| {
+                u.contains("api-v2.soundcloud.com/media")
+                    && !u.contains("cbc")
+                    && !u.contains("cenc")
+                    && !u.contains("encrypted")
+                    && !u.contains("drm")
+            }).unwrap_or(false);
+
+            if has_valid_unencrypted_trans {
+                let trans_url = track.stream_url.as_ref().unwrap();
+                if let Some(playable) = try_resolve(trans_url, cid, None) {
+                    if let Ok(mut g) = client_id_holder.lock() {
+                        *g = Some(cid.to_string());
+                    }
+                    let track_id_clean = track.id.clone();
+                    let stream_copy = playable.clone();
+                    thread::spawn(move || {
+                        Self::download_to_cache(&track_id_clean, &stream_copy);
+                    });
+                    return Some(playable);
+                }
+            } else if let Some(trans_url) = &track.stream_url {
+                if trans_url.starts_with("http") && !trans_url.contains("api-v2.soundcloud.com") && !trans_url.contains("cenc") && !trans_url.contains("encrypted") {
+                    return Some(trans_url.clone());
+                }
+            }
+
+            // 4. Fallback to /resolve?url={track.url}&client_id={cid}
             if !track.url.is_empty() && track.url.starts_with("http") {
                 let resolve_url = format!(
                     "https://api-v2.soundcloud.com/resolve?url={}&client_id={}",
@@ -314,7 +342,7 @@ impl SearchEngine {
                 let output = Command::new("curl")
                     .arg("-s")
                     .arg("-m")
-                    .arg("3")
+                    .arg("4")
                     .arg("-H")
                     .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
                     .arg(&resolve_url)
@@ -347,6 +375,29 @@ impl SearchEngine {
             }
         }
 
+        // 5. Final fallback: resolve direct media URL via yt-dlp (preferring HTTP MP3/Opus over fMP4/HLS)
+        if !track.url.is_empty() && track.url.starts_with("http") {
+            let ytdl_out = Command::new("yt-dlp")
+                .arg("-4")
+                .arg("-g")
+                .arg("-f")
+                .arg("http_mp3_1_0/hls_mp3_1_0/hls_opus_0_0/bestaudio/best")
+                .arg("--no-playlist")
+                .arg("--no-warnings")
+                .arg(&track.url)
+                .output()
+                .ok();
+
+            if let Some(out) = ytdl_out {
+                if out.status.success() {
+                    let resolved = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").trim().to_string();
+                    if resolved.starts_with("http") {
+                        return Some(resolved);
+                    }
+                }
+            }
+        }
+
         None
     }
 
@@ -354,8 +405,8 @@ impl SearchEngine {
         if track_id.is_empty() || stream_url.contains("cenc") || stream_url.contains("drm") {
             return;
         }
-        // Yield briefly so mpv gets full network priority to start playback immediately
-        thread::sleep(std::time::Duration::from_millis(500));
+        // Wait 6s so mpv gets 100% network priority to start playback and fill its read-ahead buffer first
+        thread::sleep(std::time::Duration::from_secs(6));
         let safe_name: String = track_id.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect();
         let cache_dir = crate::storage::DataStore::cache_dir();
 
@@ -584,94 +635,107 @@ impl SearchEngine {
 
         // Fast path: if not a direct URL, query SoundCloud api-v2 via curl
         if !is_direct_url {
-            let encoded_q = query.replace(' ', "%20");
-            let api_url = format!(
-                "https://api-v2.soundcloud.com/search/tracks?q={}&client_id={}&limit=25",
-                encoded_q, cid
-            );
+            let encoded_q = Self::url_encode(query.trim());
+            let mut search_cids = vec![cid.as_str()];
+            if !search_cids.contains(&"QhVEWrrJKvW4uSU5u5EoI0FTXYUGzy5k") {
+                search_cids.push("QhVEWrrJKvW4uSU5u5EoI0FTXYUGzy5k");
+            }
+            if !search_cids.contains(&"tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ") {
+                search_cids.push("tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ");
+            }
 
-            let output = Command::new("curl")
-                .arg("-s")
-                .arg("-m")
-                .arg("5")
-                .arg("-H")
-                .arg("User-Agent: Mozilla/5.0")
-                .arg(&api_url)
-                .output();
+            for scid in search_cids {
+                let api_url = format!(
+                    "https://api-v2.soundcloud.com/search/tracks?q={}&client_id={}&limit=25",
+                    encoded_q, scid
+                );
 
-            if let Ok(out) = output {
-                if out.status.success() {
-                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
-                        if let Some(collection) = v.get("collection").and_then(|c| c.as_array()) {
-                            let mut tracks = Vec::new();
-                            for item in collection {
-                                let id = item.get("id").map(|i| i.to_string()).unwrap_or_default();
-                                let title = item
-                                    .get("title")
-                                    .and_then(|t| t.as_str())
-                                    .unwrap_or("Unknown")
-                                    .to_string();
-                                let artist = item
-                                    .get("publisher_metadata")
-                                    .and_then(|pm| pm.get("artist"))
-                                    .and_then(|a| a.as_str())
-                                    .filter(|s| !s.trim().is_empty())
-                                    .or_else(|| item.get("user").and_then(|u| u.get("username")).and_then(|u| u.as_str()))
-                                    .unwrap_or("SoundCloud")
-                                    .to_string();
-                                let url = item
-                                    .get("permalink_url")
-                                    .and_then(|u| u.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let duration = item
-                                    .get("duration")
-                                    .and_then(|d| d.as_f64())
-                                    .map(|ms| ms / 1000.0)
-                                    .unwrap_or(0.0);
-                                let artwork_url = item
-                                    .get("artwork_url")
-                                    .and_then(|a| a.as_str())
-                                    .map(|s| s.to_string());
-                                let waveform_url = item
-                                    .get("waveform_url")
-                                    .and_then(|w| w.as_str())
-                                    .map(|s| s.to_string());
-                                let user_permalink = item
-                                    .get("user")
-                                    .and_then(|u| u.get("permalink"))
-                                    .and_then(|p| p.as_str())
-                                    .map(|s| s.to_string());
-                                let user_id = item
-                                    .get("user")
-                                    .and_then(|u| u.get("id"))
-                                    .map(|i| i.to_string());
+                let output = Command::new("curl")
+                    .arg("-s")
+                    .arg("-m")
+                    .arg("5")
+                    .arg("-H")
+                    .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
+                    .arg(&api_url)
+                    .output();
 
-                                let transcoding_url = item
-                                    .get("media")
-                                    .and_then(|m| m.get("transcodings"))
-                                    .and_then(|t| t.as_array())
-                                    .and_then(|arr| Self::choose_best_transcoding(arr).or_else(|| arr.first().and_then(|t| t.get("url")).and_then(|u| u.as_str())))
-                                    .map(|s| s.to_string());
+                if let Ok(out) = output {
+                    if out.status.success() {
+                        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                            if let Some(collection) = v.get("collection").and_then(|c| c.as_array()) {
+                                let mut tracks = Vec::new();
+                                for item in collection {
+                                    let id = item.get("id").map(|i| i.to_string()).unwrap_or_default();
+                                    let title = item
+                                        .get("title")
+                                        .and_then(|t| t.as_str())
+                                        .unwrap_or("Unknown")
+                                        .to_string();
+                                    let artist = item
+                                        .get("publisher_metadata")
+                                        .and_then(|pm| pm.get("artist"))
+                                        .and_then(|a| a.as_str())
+                                        .filter(|s| !s.trim().is_empty())
+                                        .or_else(|| item.get("user").and_then(|u| u.get("username")).and_then(|u| u.as_str()))
+                                        .unwrap_or("SoundCloud")
+                                        .to_string();
+                                    let url = item
+                                        .get("permalink_url")
+                                        .and_then(|u| u.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let duration = item
+                                        .get("duration")
+                                        .and_then(|d| d.as_f64())
+                                        .map(|ms| ms / 1000.0)
+                                        .unwrap_or(0.0);
+                                    let artwork_url = item
+                                        .get("artwork_url")
+                                        .and_then(|a| a.as_str())
+                                        .map(|s| s.to_string());
+                                    let waveform_url = item
+                                        .get("waveform_url")
+                                        .and_then(|w| w.as_str())
+                                        .map(|s| s.to_string());
+                                    let user_permalink = item
+                                        .get("user")
+                                        .and_then(|u| u.get("permalink"))
+                                        .and_then(|p| p.as_str())
+                                        .map(|s| s.to_string());
+                                    let user_id = item
+                                        .get("user")
+                                        .and_then(|u| u.get("id"))
+                                        .map(|i| i.to_string());
 
-                                if !url.is_empty() && !title.is_empty() {
-                                    tracks.push(TrackItem {
-                                        id,
-                                        title,
-                                        artist,
-                                        duration,
-                                        url,
-                                        stream_url: transcoding_url,
-                                        artwork_url,
-                                        waveform_url,
-                                        user_permalink,
-                                        user_id,
-                                    });
+                                    let transcoding_url = item
+                                        .get("media")
+                                        .and_then(|m| m.get("transcodings"))
+                                        .and_then(|t| t.as_array())
+                                        .and_then(|arr| Self::choose_best_transcoding(arr))
+                                        .map(|s| s.to_string());
+
+                                    if !url.is_empty() && !title.is_empty() {
+                                        tracks.push(TrackItem {
+                                            id,
+                                            title,
+                                            artist,
+                                            duration,
+                                            url,
+                                            stream_url: transcoding_url,
+                                            artwork_url,
+                                            waveform_url,
+                                            user_permalink,
+                                            user_id,
+                                        });
+                                    }
                                 }
-                            }
 
-                            if !tracks.is_empty() {
-                                return SearchResult::Success(tracks);
+                                if !tracks.is_empty() {
+                                    if let Ok(mut g) = cached_cid.lock() {
+                                        *g = Some(scid.to_string());
+                                    }
+                                    return SearchResult::Success(tracks);
+                                }
                             }
                         }
                     }

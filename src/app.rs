@@ -304,12 +304,6 @@ impl App {
                     url: resolved,
                     source: "direct",
                 });
-            } else if !track_clone.url.is_empty() && track_clone.url.starts_with("http") {
-                let _ = tx.send(StreamResolveEvent::Resolved {
-                    track_id: track_clone.id,
-                    url: track_clone.url,
-                    source: "ytdl",
-                });
             } else {
                 let _ = tx.send(StreamResolveEvent::Failed {
                     track_id: track_clone.id,
@@ -771,7 +765,7 @@ impl App {
                     self.play_selected_in_current_view();
                 }
             }
-            KeyCode::Char('/') => {
+            KeyCode::Char('/') | KeyCode::Char('?') => {
                 self.view_mode = ViewMode::Search;
                 self.is_editing_search = true;
                 self.set_status("Search mode (type query and press Enter)");
@@ -785,12 +779,7 @@ impl App {
                 self.speed_down();
             }
             KeyCode::Char(',') => {
-                // If Shift was held, it's '<'
-                if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) {
-                    self.speed_down();
-                } else {
-                    self.speed_down();
-                }
+                self.speed_down();
             }
             KeyCode::Char('>')
             | KeyCode::Char(']')
@@ -801,12 +790,21 @@ impl App {
                 self.speed_up();
             }
             KeyCode::Char('.') => {
-                // In Russian layout, '/' on English layout is '.' in Russian layout on the same physical key!
-                // So if user presses this key without shift in Russian or wants search, or speed:
-                // Only speed_up if shifted (i.e. '>') or let '.' speed up only when not intending search
                 self.speed_up();
             }
-            KeyCode::Char('\\') | KeyCode::Backspace | KeyCode::Char('0') => {
+            KeyCode::Backspace => {
+                if self.view_mode == ViewMode::Search {
+                    self.is_editing_search = true;
+                    if self.input_cursor > 0 {
+                        self.input_cursor -= 1;
+                        self.query_chars.remove(self.input_cursor);
+                    }
+                    self.set_status("Search mode (type query and press Enter)");
+                } else {
+                    self.reset_speed();
+                }
+            }
+            KeyCode::Char('\\') | KeyCode::Char('0') => {
                 self.reset_speed();
             }
             KeyCode::Char('n') => {
@@ -947,7 +945,7 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('i') => {
+            KeyCode::Char('i') | KeyCode::Char('ш') | KeyCode::Char('Ш') => {
                 self.view_mode = ViewMode::Search;
                 self.is_editing_search = true;
                 self.set_status("Search mode (type query and press Enter)");
@@ -1245,6 +1243,13 @@ impl App {
                     }
                 }
                 crate::audio::PlayerEvent::PlaybackError(err) => {
+                    if let Some(track) = self.current_track().cloned() {
+                        if let Some(cached) = crate::storage::DataStore::get_cached_track_path(&track.id) {
+                            let _ = std::fs::remove_file(cached);
+                            self.play_track(track);
+                            continue;
+                        }
+                    }
                     self.set_status(&format!("Playback error: {}", err));
                 }
             }
@@ -1340,7 +1345,7 @@ impl App {
             self.is_searching = false;
             match res {
                 SearchResult::Success(tracks) => {
-                    self.set_status(&format!("Found {} tracks", tracks.len()));
+                    self.set_status(&format!("Found {} tracks — press Enter to play", tracks.len()));
                     self.search_results = tracks;
                     self.search_cursor = 0;
                 }

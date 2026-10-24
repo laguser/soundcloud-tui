@@ -128,8 +128,17 @@ fn render_search_view(f: &mut Frame, app: &App, area: Rect) {
 
     if app.query_chars.is_empty() && !app.is_editing_search {
         input_spans.push(Span::styled(
-            "press 'i' or '/' to search SoundCloud...",
-            Style::default().fg(Color::Rgb(70, 70, 70)),
+            "press '/' or 'i' to search SoundCloud...",
+            Style::default().fg(Color::Rgb(85, 85, 85)),
+        ));
+    } else if app.query_chars.is_empty() && app.is_editing_search {
+        input_spans.push(Span::styled(
+            " ",
+            Style::default().bg(accent),
+        ));
+        input_spans.push(Span::styled(
+            " type song or artist and press Enter...",
+            Style::default().fg(Color::Rgb(75, 75, 75)),
         ));
     } else {
         let cursor_pos = app.input_cursor;
@@ -147,6 +156,12 @@ fn render_search_view(f: &mut Frame, app: &App, area: Rect) {
             input_spans.push(Span::styled(
                 " ",
                 Style::default().bg(accent),
+            ));
+        }
+        if !app.is_editing_search {
+            input_spans.push(Span::styled(
+                "   (/ or i to search · Enter to play)",
+                Style::default().fg(Color::Rgb(75, 75, 75)),
             ));
         }
     }
@@ -759,13 +774,16 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 
 fn render_bottom_bar(f: &mut Frame, _app: &App, area: Rect) {
     let hints = vec![
-        Span::styled("  space ", Style::default().fg(Color::Rgb(120, 120, 120))),
-        Span::styled("play/pause ", Style::default().fg(Color::Rgb(70, 70, 70))),
+        Span::styled("  / ", Style::default().fg(Color::Rgb(120, 120, 120))),
+        Span::styled("search ", Style::default().fg(Color::Rgb(70, 70, 70))),
         Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
         Span::styled("enter ", Style::default().fg(Color::Rgb(120, 120, 120))),
         Span::styled("play ", Style::default().fg(Color::Rgb(70, 70, 70))),
         Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
-        Span::styled("tab ", Style::default().fg(Color::Rgb(120, 120, 120))),
+        Span::styled("space ", Style::default().fg(Color::Rgb(120, 120, 120))),
+        Span::styled("pause ", Style::default().fg(Color::Rgb(70, 70, 70))),
+        Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
+        Span::styled("tab/1-7 ", Style::default().fg(Color::Rgb(120, 120, 120))),
         Span::styled("views ", Style::default().fg(Color::Rgb(70, 70, 70))),
         Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
         Span::styled("a ", Style::default().fg(Color::Rgb(120, 120, 120))),
@@ -780,7 +798,7 @@ fn render_bottom_bar(f: &mut Frame, _app: &App, area: Rect) {
         Span::styled("< > ", Style::default().fg(Color::Rgb(120, 120, 120))),
         Span::styled("spd (0.85/1.25) ", Style::default().fg(Color::Rgb(70, 70, 70))),
         Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
-        Span::styled("0/bs ", Style::default().fg(Color::Rgb(120, 120, 120))),
+        Span::styled("0 ", Style::default().fg(Color::Rgb(120, 120, 120))),
         Span::styled("norm ", Style::default().fg(Color::Rgb(70, 70, 70))),
         Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
         Span::styled("y ", Style::default().fg(Color::Rgb(120, 120, 120))),
