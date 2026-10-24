@@ -406,7 +406,7 @@ fn render_playlist_detail_view(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(10), // Banner with cover
+            Constraint::Length(14), // Banner with cover
             Constraint::Length(1), // Spacer
             Constraint::Fill(1),   // Tracks
         ])
@@ -448,10 +448,10 @@ fn render_playlist_detail_view(f: &mut Frame, app: &App, area: Rect) {
     if let Some(ref art) = playlist.artwork_url {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(2), Constraint::Length(20), Constraint::Length(1), Constraint::Fill(1)])
+            .constraints([Constraint::Length(2), Constraint::Length(28), Constraint::Length(2), Constraint::Fill(1)])
             .split(chunks[0]);
         render_cover(f, art, cols[1], accent);
-        let text_area = Rect { y: cols[3].y + 2, height: cols[3].height.saturating_sub(2), ..cols[3] };
+        let text_area = Rect { y: cols[3].y + 4, height: cols[3].height.saturating_sub(4), ..cols[3] };
         f.render_widget(banner, text_area);
     } else {
         f.render_widget(banner, chunks[0]);
@@ -1160,6 +1160,7 @@ fn render_bottom_bar(f: &mut Frame, _app: &App, area: Rect) {
 }
 
 // ---- Cover image rendering (half-block truecolor) ----
+const N: usize = 128;
 type CoverPixels = Vec<Vec<(u8, u8, u8)>>;
 enum CoverState {
     Loading,
@@ -1183,10 +1184,10 @@ fn load_cover(url: &str) -> Option<CoverPixels> {
         return None;
     }
     let img = image::load_from_memory(&out.stdout).ok()?.to_rgb8();
-    let thumb = image::imageops::resize(&img, 48, 48, image::imageops::FilterType::Triangle);
+    let thumb = image::imageops::resize(&img, N as u32, N as u32, image::imageops::FilterType::Lanczos3);
     let mut rows = Vec::new();
-    for y in 0..48 {
-        rows.push((0..48).map(|x| { let p = thumb.get_pixel(x, y); (p[0], p[1], p[2]) }).collect());
+    for y in 0..N as u32 {
+        rows.push((0..N as u32).map(|x| { let p = thumb.get_pixel(x, y); (p[0], p[1], p[2]) }).collect());
     }
     Some(rows)
 }
@@ -1206,18 +1207,33 @@ fn render_cover(f: &mut Frame, url: &str, area: Rect, accent: Color) {
             Some(CoverState::Ready(px)) => {
                 let w = area.width as usize;
                 let h = area.height as usize * 2;
+                let avg = |px: &CoverPixels, row: usize, col: usize, rows: usize, cols: usize| -> Color {
+                    let y0 = row * N / rows;
+                    let y1 = ((row + 1) * N / rows).max(y0 + 1).min(N);
+                    let x0 = col * N / cols;
+                    let x1 = ((col + 1) * N / cols).max(x0 + 1).min(N);
+                    let (mut r, mut g, mut b, mut n) = (0u32, 0u32, 0u32, 0u32);
+                    for y in y0..y1 {
+                        for x in x0..x1 {
+                            let p = px[y][x];
+                            r += p.0 as u32;
+                            g += p.1 as u32;
+                            b += p.2 as u32;
+                            n += 1;
+                        }
+                    }
+                    let n = n.max(1);
+                    Color::Rgb((r / n) as u8, (g / n) as u8, (b / n) as u8)
+                };
                 (0..area.height as usize)
                     .map(|row| {
                         let spans: Vec<Span> = (0..w)
                             .map(|col| {
-                                let sx = col * 48 / w;
-                                let top = px[(row * 2) * 48 / h][sx];
-                                let bot = px[(row * 2 + 1) * 48 / h][sx];
                                 Span::styled(
                                     "▀",
                                     Style::default()
-                                        .fg(Color::Rgb(top.0, top.1, top.2))
-                                        .bg(Color::Rgb(bot.0, bot.1, bot.2)),
+                                        .fg(avg(px, row * 2, col, h, w))
+                                        .bg(avg(px, row * 2 + 1, col, h, w)),
                                 )
                             })
                             .collect();

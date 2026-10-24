@@ -614,52 +614,76 @@ impl SearchEngine {
     ) -> TrackItem {
         let search_q = format!("{} {}", raw.artist, raw.title);
         let encoded_q = Self::url_encode(&search_q);
-        let search_url = format!(
-            "https://api-v2.soundcloud.com/search/tracks?q={}&client_id={}&limit=1",
-            encoded_q, cid
-        );
+        let main_title = raw
+            .title
+            .split(&['(', '[', '-'][..])
+            .next()
+            .unwrap_or(&raw.title)
+            .trim()
+            .to_lowercase();
+        let mut cids: Vec<&str> = vec![cid];
+        for c in ["QhVEWrrJKvW4uSU5u5EoI0FTXYUGzy5k", "tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ"] {
+            if !cids.contains(&c) {
+                cids.push(c);
+            }
+        }
 
-        let output = Command::new("curl")
-            .arg("-s")
-            .arg("-m")
-            .arg("5")
-            .arg("-H")
-            .arg("User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-            .arg(&search_url)
-            .output();
-
-        if let Ok(out) = output {
-            if out.status.success() {
-                if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
-                    if let Some(col) = val.get("collection").and_then(|c| c.as_array()) {
-                        if let Some(item) = col.first() {
-                            let sc_id = item.get("id").map(|i| i.to_string()).unwrap_or_default();
-                            let sc_url = item.get("permalink_url").and_then(|u| u.as_str()).unwrap_or("").to_string();
-                            if !sc_id.is_empty() && !sc_url.is_empty() {
-                                let sc_art = item.get("artwork_url").and_then(|a| a.as_str()).map(|s| s.to_string())
-                                    .or_else(|| fallback_artwork.map(|s| s.to_string()));
-                                let sc_waveform = item.get("waveform_url").and_then(|w| w.as_str()).map(|s| s.to_string());
-                                let sc_u_permalink = item.get("user").and_then(|u| u.get("permalink")).and_then(|p| p.as_str()).map(|s| s.to_string());
-                                let sc_u_id = item.get("user").and_then(|u| u.get("id")).map(|i| i.to_string());
-                                let sc_duration = item.get("duration").and_then(|d| d.as_f64()).map(|ms| ms / 1000.0).unwrap_or(raw.duration);
-
-                                return TrackItem {
-                                    id: sc_id,
-                                    title: raw.title.clone(),
-                                    artist: raw.artist.clone(),
-                                    duration: if sc_duration > 0.0 { sc_duration } else { raw.duration },
-                                    url: sc_url,
-                                    stream_url: None,
-                                    artwork_url: sc_art,
-                                    waveform_url: sc_waveform,
-                                    user_permalink: sc_u_permalink,
-                                    user_id: sc_u_id,
-                                };
-                            }
-                        }
-                    }
+        for scid in cids {
+            let search_url = format!(
+                "https://api-v2.soundcloud.com/search/tracks?q={}&client_id={}&limit=8",
+                encoded_q, scid
+            );
+            let output = Command::new("curl")
+                .arg("-s")
+                .arg("-m")
+                .arg("6")
+                .arg("-H")
+                .arg("User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .arg(&search_url)
+                .output();
+            let Ok(out) = output else { continue };
+            if !out.status.success() {
+                continue;
+            }
+            let Ok(val) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { continue };
+            let Some(col) = val.get("collection").and_then(|c| c.as_array()) else { continue };
+            // Prefer fully playable, non-snipped tracks whose title matches
+            let playable = |it: &&serde_json::Value| {
+                it.get("policy").and_then(|p| p.as_str()).map(|p| p != "BLOCK").unwrap_or(true)
+                    && it.get("media").and_then(|m| m.get("transcodings")).and_then(|t| t.as_array()).map(|t| !t.is_empty()).unwrap_or(false)
+                    && it.get("duration").and_then(|d| d.as_f64()).map(|d| raw.duration <= 0.0 || (d / 1000.0 - raw.duration).abs() < 40.0 || d / 1000.0 > raw.duration * 0.8).unwrap_or(true)
+            };
+            let chosen = col
+                .iter()
+                .filter(playable)
+                .find(|it| it.get("title").and_then(|t| t.as_str()).map(|t| t.to_lowercase().contains(&main_title)).unwrap_or(false))
+                .or_else(|| col.iter().find(playable));
+            if let Some(item) = chosen {
+                let sc_id = item.get("id").map(|i| i.to_string()).unwrap_or_default();
+                let sc_url = item.get("permalink_url").and_then(|u| u.as_str()).unwrap_or("").to_string();
+                if !sc_id.is_empty() && !sc_url.is_empty() {
+                    let sc_art = item.get("artwork_url").and_then(|a| a.as_str()).map(|s| s.replace("-large", "-t500x500"))
+                        .or_else(|| raw.artwork_url.clone())
+                        .or_else(|| fallback_artwork.map(|s| s.to_string()));
+                    let sc_waveform = item.get("waveform_url").and_then(|w| w.as_str()).map(|s| s.to_string());
+                    let sc_u_permalink = item.get("user").and_then(|u| u.get("permalink")).and_then(|p| p.as_str()).map(|s| s.to_string());
+                    let sc_u_id = item.get("user").and_then(|u| u.get("id")).map(|i| i.to_string());
+                    let sc_duration = item.get("duration").and_then(|d| d.as_f64()).map(|ms| ms / 1000.0).unwrap_or(raw.duration);
+                    return TrackItem {
+                        id: sc_id,
+                        title: raw.title.clone(),
+                        artist: raw.artist.clone(),
+                        duration: if sc_duration > 0.0 { sc_duration } else { raw.duration },
+                        url: sc_url,
+                        stream_url: None,
+                        artwork_url: sc_art,
+                        waveform_url: sc_waveform,
+                        user_permalink: sc_u_permalink,
+                        user_id: sc_u_id,
+                    };
                 }
             }
+            break;
         }
 
         // 2. Fallback to YouTube search query via ytsearch1:
