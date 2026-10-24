@@ -174,6 +174,8 @@ pub struct PlaylistItem {
     pub track_count: usize,
     pub url: String,
     pub tracks: Vec<TrackItem>,
+    #[serde(default)]
+    pub artwork_url: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -506,10 +508,20 @@ impl DataStore {
             track_count: 0,
             url: format!("local://{}", id),
             tracks: Vec::new(),
+            artwork_url: None,
         };
         self.playlists.push(pl);
         self.save();
         id
+    }
+
+    pub fn set_playlist_artwork(&mut self, playlist_idx: usize, url: Option<String>) -> bool {
+        if let Some(pl) = self.playlists.get_mut(playlist_idx) {
+            pl.artwork_url = url;
+            self.save();
+            return true;
+        }
+        false
     }
 
     pub fn add_track_to_playlist(&mut self, playlist_idx: usize, track: TrackItem) -> bool {

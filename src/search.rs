@@ -608,6 +608,7 @@ impl SearchEngine {
                             }
 
                             let track_count = playlist_tracks.len();
+                            let pl_art = v.get("artwork_url").and_then(|a| a.as_str()).map(|s| s.to_string());
                             return SearchResult::PlaylistLoaded(crate::storage::PlaylistItem {
                                 id: playlist_id,
                                 title,
@@ -615,6 +616,7 @@ impl SearchEngine {
                                 track_count,
                                 url: full_url,
                                 tracks: playlist_tracks,
+                                artwork_url: pl_art,
                             });
                         } else if kind == "track" {
                             let id = v.get("id").map(|i| i.to_string()).unwrap_or_default();
@@ -1258,6 +1260,7 @@ impl SearchEngine {
                                 pl_tracks.retain(|t| !t.title.is_empty() && t.title != "Loading...");
 
                                 if !pl_id.is_empty() && !user_playlists.iter().any(|p: &crate::storage::PlaylistItem| p.id == pl_id) {
+                                    let pl_art = pl_obj.get("artwork_url").and_then(|a| a.as_str()).map(|s| s.to_string());
                                     user_playlists.push(crate::storage::PlaylistItem {
                                         id: pl_id,
                                         title: pl_title,
@@ -1265,6 +1268,7 @@ impl SearchEngine {
                                         track_count: if pl_tracks.is_empty() { track_count } else { pl_tracks.len() },
                                         url: pl_url,
                                         tracks: pl_tracks,
+                                        artwork_url: pl_art,
                                     });
                                 }
                             }

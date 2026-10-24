@@ -94,10 +94,11 @@ pub struct App {
     pub current_user_profile: Option<crate::search::UserProfile>,
     pub user_profile_cursor: usize,
 
-    // Modal dialogs: Creating playlist or adding track to playlist
+    // Modal dialogs: Creating playlist or adding track to playlist or setting playlist artwork
     pub modal_input: Option<Vec<char>>,
     pub modal_target_track: Option<TrackItem>,
     pub modal_playlist_cursor: usize,
+    pub modal_artwork_input: Option<(usize, Vec<char>)>,
 
     // Audio status & playback modes
     pub player: AudioPlayer,
@@ -184,6 +185,7 @@ impl App {
             modal_input: None,
             modal_target_track: None,
             modal_playlist_cursor: 0,
+            modal_artwork_input: None,
 
             player,
             search_engine: SearchEngine::new(store.config.client_id.clone()),
@@ -646,6 +648,40 @@ impl App {
             return;
         }
 
+        // If modal input is active for playlist artwork URL
+        if let Some((pl_idx, chars)) = &mut self.modal_artwork_input {
+            match key.code {
+                KeyCode::Esc => {
+                    self.modal_artwork_input = None;
+                }
+                KeyCode::Char(c) => {
+                    chars.push(c);
+                }
+                KeyCode::Backspace => {
+                    chars.pop();
+                }
+                KeyCode::Enter => {
+                    let url_str: String = chars.iter().collect();
+                    let trimmed = url_str.trim();
+                    let artwork = if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    };
+                    let pl_idx_val = *pl_idx;
+                    self.store.set_playlist_artwork(pl_idx_val, artwork.clone());
+                    if artwork.is_some() {
+                        self.set_status("Playlist cover artwork updated");
+                    } else {
+                        self.set_status("Playlist cover artwork cleared");
+                    }
+                    self.modal_artwork_input = None;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // Modal for selecting a playlist to add a track
         if self.modal_target_track.is_some() {
             match key.code {
@@ -960,6 +996,27 @@ impl App {
                 // Create local playlist dialog
                 if self.view_mode == ViewMode::Playlists {
                     self.modal_input = Some(Vec::new());
+                }
+            }
+            KeyCode::Char('C') => {
+                // Edit cover artwork URL for playlist
+                let target_idx = match self.view_mode {
+                    ViewMode::Playlists => {
+                        if !self.store.playlists.is_empty() && self.playlists_cursor < self.store.playlists.len() {
+                            Some(self.playlists_cursor)
+                        } else {
+                            None
+                        }
+                    }
+                    ViewMode::PlaylistDetail => self.selected_playlist_idx,
+                    _ => None,
+                };
+                if let Some(idx) = target_idx {
+                    let existing_chars: Vec<char> = self.store.playlists.get(idx)
+                        .and_then(|p| p.artwork_url.as_deref())
+                        .map(|u| u.chars().collect())
+                        .unwrap_or_default();
+                    self.modal_artwork_input = Some((idx, existing_chars));
                 }
             }
             KeyCode::Char('m') => {

@@ -48,9 +48,11 @@ pub fn render(f: &mut Frame, app: &App) {
         render_bottom_bar(f, app, chunks[5]);
     }
 
-    // Modal overlays (Creating playlist or adding to playlist)
+    // Modal overlays (Creating playlist or adding to playlist or artwork URL)
     if let Some(chars) = &app.modal_input {
         render_input_modal(f, app, chars, "New Playlist Name:");
+    } else if let Some((_, chars)) = &app.modal_artwork_input {
+        render_artwork_input_modal(f, app, chars);
     } else if let Some(target_track) = &app.modal_target_track {
         render_add_to_playlist_modal(f, app, target_track);
     }
@@ -321,14 +323,30 @@ fn render_playlists_view(f: &mut Frame, app: &App, area: Rect) {
         let empty = Paragraph::new(vec![
             Line::from(""),
             Line::from(Span::styled("no saved playlists", Style::default().fg(Color::Rgb(80, 80, 80)))),
-            Line::from(Span::styled("paste any soundcloud playlist link in search to load", Style::default().fg(Color::Rgb(50, 50, 50)))),
+            Line::from(Span::styled("press 'c' to create a playlist or paste any SoundCloud playlist link in search", Style::default().fg(Color::Rgb(50, 50, 50)))),
         ])
         .alignment(Alignment::Center);
         f.render_widget(empty, area);
         return;
     }
 
-    let max_lines = area.height as usize;
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Top hints
+            Constraint::Length(1), // Spacer
+            Constraint::Fill(1),   // Playlists list
+        ])
+        .split(area);
+
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled("  ≡ ", Style::default().fg(accent).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("Your Playlists ({})", app.store.playlists.len()), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled("  •  'c' create  •  'Shift+C' set cover image  •  'd' delete", Style::default().fg(Color::Rgb(90, 90, 90))),
+    ]));
+    f.render_widget(header, chunks[0]);
+
+    let max_lines = chunks[2].height as usize;
     if max_lines == 0 {
         return;
     }
@@ -350,17 +368,23 @@ fn render_playlists_view(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Rgb(150, 150, 150))
         };
 
+        let cover_icon = if pl.artwork_url.is_some() {
+            Span::styled("🖼  ", Style::default().fg(accent))
+        } else {
+            Span::styled("≡  ", Style::default().fg(Color::Rgb(80, 80, 80)))
+        };
+
         lines.push(Line::from(vec![
             Span::styled(prefix, Style::default().fg(if is_selected { accent } else { Color::Rgb(60, 60, 60) })),
-            Span::styled("≡ ", Style::default().fg(accent)),
-            Span::styled(format!("{:<38}", truncate_str(&pl.title, 36)), title_style),
-            Span::styled(format!(" {:<20}", truncate_str(&pl.author, 18)), Style::default().fg(Color::Rgb(80, 80, 80))),
+            cover_icon,
+            Span::styled(format!("{:<36}", truncate_str(&pl.title, 34)), title_style),
+            Span::styled(format!(" {:<22}", truncate_str(&pl.author, 20)), Style::default().fg(Color::Rgb(80, 80, 80))),
             Span::styled(format!("{:>6} tracks", pl.track_count), Style::default().fg(Color::Rgb(65, 65, 65))),
         ]));
     }
 
     let p = Paragraph::new(lines);
-    f.render_widget(p, area);
+    f.render_widget(p, chunks[2]);
 }
 
 fn render_playlist_detail_view(f: &mut Frame, app: &App, area: Rect) {
@@ -374,22 +398,62 @@ fn render_playlist_detail_view(f: &mut Frame, app: &App, area: Rect) {
         }
     };
 
+    let total_secs: f64 = playlist.tracks.iter().map(|t| t.duration).sum();
+    let duration_str = format_duration(total_secs);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // Header info
-            Constraint::Length(1), // Blank
+            Constraint::Length(5), // Beautiful decorative banner
+            Constraint::Length(1), // Spacer
             Constraint::Fill(1),   // Tracks
         ])
         .split(area);
 
-    let header = Paragraph::new(Line::from(vec![
-        Span::styled("≡ ", Style::default().fg(accent)),
-        Span::styled(&playlist.title, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("  by {}  •  {} tracks", playlist.author, playlist.track_count), Style::default().fg(Color::Rgb(90, 90, 90))),
-        Span::styled("  (esc to back)", Style::default().fg(Color::Rgb(60, 60, 60))),
-    ]));
-    f.render_widget(header, chunks[0]);
+    // Beautiful header banner
+    let art_status = if let Some(ref art) = playlist.artwork_url {
+        format!("cover: {}", truncate_str(art, 40))
+    } else {
+        "no cover (press 'Shift+C' to set)".to_string()
+    };
+
+    let banner_lines = vec![
+        Line::from(vec![
+            Span::styled("  ╭─ ", Style::default().fg(accent)),
+            Span::styled(&playlist.title, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  [{} tracks · {}]", playlist.track_count, duration_str), Style::default().fg(accent)),
+        ]),
+        Line::from(vec![
+            Span::styled("  │  ", Style::default().fg(accent)),
+            Span::styled(format!("Curated by: @{}", playlist.author), Style::default().fg(Color::Rgb(150, 150, 150))),
+            Span::styled(format!("  •  {}", art_status), Style::default().fg(Color::Rgb(95, 95, 95))),
+        ]),
+        Line::from(vec![
+            Span::styled("  │  ", Style::default().fg(accent)),
+            Span::styled("Actions: ", Style::default().fg(Color::Rgb(110, 110, 110))),
+            Span::styled("Enter ", Style::default().fg(Color::White)),
+            Span::styled("play track  •  ", Style::default().fg(Color::Rgb(80, 80, 80))),
+            Span::styled("Shift+C ", Style::default().fg(Color::White)),
+            Span::styled("set/change cover image URL  •  ", Style::default().fg(Color::Rgb(80, 80, 80))),
+            Span::styled("d ", Style::default().fg(Color::White)),
+            Span::styled("remove track  •  ", Style::default().fg(Color::Rgb(80, 80, 80))),
+            Span::styled("Esc ", Style::default().fg(Color::White)),
+            Span::styled("back", Style::default().fg(Color::Rgb(80, 80, 80))),
+        ]),
+        Line::from(Span::styled("  ╰─────────────────────────────────────────────────────────────────────────────", Style::default().fg(Color::Rgb(45, 45, 45)))),
+    ];
+    let banner = Paragraph::new(banner_lines);
+    f.render_widget(banner, chunks[0]);
+
+    if playlist.tracks.is_empty() {
+        let empty = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled("This playlist is empty", Style::default().fg(Color::Rgb(80, 80, 80)))),
+            Line::from(Span::styled("Press 'm' on any track in Search or Favorites to add it here", Style::default().fg(Color::Rgb(55, 55, 55)))),
+        ]).alignment(Alignment::Center);
+        f.render_widget(empty, chunks[2]);
+        return;
+    }
 
     render_tracks_list(f, &playlist.tracks, app.playlist_detail_cursor, accent, chunks[2], app);
 }
@@ -952,6 +1016,36 @@ fn render_input_modal(f: &mut Frame, app: &App, input_chars: &[char], prompt: &s
         ]),
         Line::from(""),
         Line::from(Span::styled("Enter: Confirm  •  Esc: Cancel", Style::default().fg(Color::Rgb(80, 80, 80)))),
+    ]);
+    f.render_widget(p, inner);
+}
+
+fn render_artwork_input_modal(f: &mut Frame, app: &App, input_chars: &[char]) {
+    let size = f.area();
+    let accent = app.theme_accent();
+    let text: String = input_chars.iter().collect();
+
+    let area = centered_rect(65, 24, size);
+    f.render_widget(ratatui::widgets::Clear, area);
+
+    let block = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(Style::default().fg(accent))
+        .title(Span::styled(" Set Playlist Cover Image URL ", Style::default().fg(accent).add_modifier(Modifier::BOLD)));
+    f.render_widget(block, area);
+
+    let inner = area.inner(ratatui::layout::Margin { horizontal: 2, vertical: 1 });
+    let p = Paragraph::new(vec![
+        Line::from(Span::styled("Paste direct image link (e.g. https://.../cover.jpg or i.imgur.com/...):", Style::default().fg(Color::Rgb(140, 140, 140)))),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("🖼  ", Style::default().fg(accent)),
+            Span::styled(if text.is_empty() { "https://" } else { &text }, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled("▍", Style::default().fg(accent)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("Tip: Leave blank and press Enter to remove cover image", Style::default().fg(Color::Rgb(95, 95, 95)))),
+        Line::from(Span::styled("Enter: Save  •  Esc: Cancel", Style::default().fg(Color::Rgb(80, 80, 80)))),
     ]);
     f.render_widget(p, inner);
 }
