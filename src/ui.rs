@@ -76,7 +76,12 @@ fn render_top_bar(f: &mut Frame, app: &App, area: Rect) {
     }
 
     if (app.current_speed - 1.0).abs() > 0.001 {
-        spans.push(Span::styled(format!("{:.2}x ", app.current_speed), Style::default().fg(accent).add_modifier(Modifier::BOLD)));
+        let label = if app.current_speed < 1.0 {
+            format!("{:.2}x slowed ", app.current_speed)
+        } else {
+            format!("{:.2}x sped up ", app.current_speed)
+        };
+        spans.push(Span::styled(label, Style::default().fg(accent).add_modifier(Modifier::BOLD)));
     } else {
         spans.push(Span::styled("1.00x ", Style::default().fg(Color::Rgb(110, 110, 110))));
     }
@@ -786,17 +791,14 @@ fn render_bottom_bar(f: &mut Frame, _app: &App, area: Rect) {
         Span::styled("tab/1-7 ", Style::default().fg(Color::Rgb(120, 120, 120))),
         Span::styled("views ", Style::default().fg(Color::Rgb(70, 70, 70))),
         Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
-        Span::styled("a ", Style::default().fg(Color::Rgb(120, 120, 120))),
-        Span::styled("queue ", Style::default().fg(Color::Rgb(70, 70, 70))),
+        Span::styled("w ", Style::default().fg(Color::Rgb(120, 120, 120))),
+        Span::styled("wave ", Style::default().fg(Color::Rgb(70, 70, 70))),
         Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
-        Span::styled("s ", Style::default().fg(Color::Rgb(120, 120, 120))),
-        Span::styled("shuf ", Style::default().fg(Color::Rgb(70, 70, 70))),
-        Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
-        Span::styled("r ", Style::default().fg(Color::Rgb(120, 120, 120))),
-        Span::styled("repeat ", Style::default().fg(Color::Rgb(70, 70, 70))),
+        Span::styled("o ", Style::default().fg(Color::Rgb(120, 120, 120))),
+        Span::styled("link ", Style::default().fg(Color::Rgb(70, 70, 70))),
         Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
         Span::styled("< > ", Style::default().fg(Color::Rgb(120, 120, 120))),
-        Span::styled("spd (0.85/1.25) ", Style::default().fg(Color::Rgb(70, 70, 70))),
+        Span::styled("slow/fast ", Style::default().fg(Color::Rgb(70, 70, 70))),
         Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
         Span::styled("0 ", Style::default().fg(Color::Rgb(120, 120, 120))),
         Span::styled("norm ", Style::default().fg(Color::Rgb(70, 70, 70))),

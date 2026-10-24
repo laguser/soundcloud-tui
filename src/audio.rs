@@ -52,7 +52,7 @@ impl AudioPlayer {
             .arg("--no-ytdl")
             .arg("--user-agent=Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
             .arg("--hls-bitrate=max")
-            .arg("--audio-pitch-correction=yes")
+            .arg("--audio-pitch-correction=no")
             .arg("--demuxer-lavf-o=allowed_extensions=ALL")
             .arg("--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_delay_max=4")
             .arg("--network-timeout=10")

@@ -9,7 +9,7 @@ mod ui;
 
 use app::App;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyModifiers},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -51,45 +51,55 @@ fn main() -> Result<(), Box<dyn Error>> {
             .unwrap_or_else(|| Duration::from_secs(0));
 
         if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-                    app.save_current_state();
-                    break;
-                }
-
-                if key.code == KeyCode::Char('q') && !app.is_editing_search && app.modal_input.is_none() && app.modal_target_track.is_none() {
-                    app.save_current_state();
-                    break;
-                }
-
-                // Double ESC to quit, single ESC to exit search input / return
-                if key.code == KeyCode::Esc {
-                    let now = Instant::now();
-                    let is_double_esc = if let Some(last) = app.last_esc_press {
-                        now.duration_since(last) <= Duration::from_millis(500)
-                    } else {
-                        false
-                    };
-
-                    if is_double_esc {
+            match event::read()? {
+                Event::Key(key) => {
+                    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
                         app.save_current_state();
                         break;
                     }
 
-                    app.last_esc_press = Some(now);
-
-                    if app.is_editing_search {
-                        app.is_editing_search = false;
-                    } else if app.view_mode == app::ViewMode::PlaylistDetail {
-                        app.view_mode = app::ViewMode::Playlists;
-                    } else {
-                        app.view_mode = app::ViewMode::Search;
+                    if key.code == KeyCode::Char('q') && !app.is_editing_search && app.modal_input.is_none() && app.modal_target_track.is_none() {
+                        app.save_current_state();
+                        break;
                     }
-                    continue;
-                }
 
-                app.handle_key(key);
-                app.poll_async_events();
+                    // Double ESC to quit, single ESC to exit search input / return
+                    if key.code == KeyCode::Esc {
+                        let now = Instant::now();
+                        let is_double_esc = if let Some(last) = app.last_esc_press {
+                            now.duration_since(last) <= Duration::from_millis(500)
+                        } else {
+                            false
+                        };
+
+                        if is_double_esc {
+                            app.save_current_state();
+                            break;
+                        }
+
+                        app.last_esc_press = Some(now);
+
+                        if app.is_editing_search {
+                            app.is_editing_search = false;
+                        } else if app.view_mode == app::ViewMode::PlaylistDetail {
+                            app.view_mode = app::ViewMode::Playlists;
+                        } else {
+                            app.view_mode = app::ViewMode::Search;
+                        }
+                        continue;
+                    }
+
+                    app.handle_key(key);
+                    app.poll_async_events();
+                }
+                Event::Mouse(mouse) => {
+                    if let Ok(size) = terminal.size() {
+                        let rect = ratatui::layout::Rect::new(0, 0, size.width, size.height);
+                        app.handle_mouse(mouse, rect);
+                        app.poll_async_events();
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -99,7 +109,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
 
     Ok(())

@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Publish Release Assets
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust & packaging dependencies
+        run: |
+          pacman -Syu --noconfirm rust cargo git zstd tar binutils fakeroot pacman-contrib
+
+      - name: Build release binary & run tests
+        run: |
+          cargo test --release
+          cargo build --release --locked
+
+      - name: Package tarball & Arch Linux Pacman repository
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist pkgroot/usr/bin pkgroot/usr/share/licenses/sctui
+
+          cp target/release/sctui dist/sctui
+          tar -czf "dist/sctui-${VERSION}-x86_64.tar.gz" -C target/release sctui ../..//README.md ../../LICENSE 2>/dev/null || \
+            tar -czf "dist/sctui-${VERSION}-x86_64.tar.gz" -C target/release sctui
+
+          # Create non-root builder user for makepkg
+          useradd -m builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+          chown -R builder:builder .
+
+          # Build sctui-bin package
+          mkdir -p build-bin
+          cp PKGBUILD.bin build-bin/PKGBUILD
+          sed -i "s/^pkgver=.*/pkgver=${VERSION}/" build-bin/PKGBUILD
+          cp "dist/sctui-${VERSION}-x86_64.tar.gz" build-bin/
+          chown -R builder:builder build-bin
+          su builder -c "cd build-bin && makepkg -f --skipchecksums --nodeps"
+
+          for pkg in build-bin/*.pkg.tar.zst; do
+            cp "$pkg" "dist/sctui-bin-${VERSION}-1-x86_64.pkg.tar.zst"
+            cp "$pkg" "dist/sctui-bin-x86_64.pkg.tar.zst"
+            cp "$pkg" "dist/sctui-${VERSION}-1-x86_64.pkg.tar.zst"
+          done
+
+          # Generate Pacman repository database (sctui.db)
+          cd dist
+          repo-add sctui.db.tar.gz "sctui-${VERSION}-1-x86_64.pkg.tar.zst" "sctui-bin-${VERSION}-1-x86_64.pkg.tar.zst"
+          rm -f sctui.db sctui.files
+          cp sctui.db.tar.gz sctui.db
+          cp sctui.files.tar.gz sctui.files
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/sctui
+            dist/*.tar.gz
+            dist/*.pkg.tar.zst
+            dist/sctui.db
+            dist/sctui.db.tar.gz
+            dist/sctui.files
+            dist/sctui.files.tar.gz

@@ -19,6 +19,7 @@ pub struct UserProfile {
 
 pub enum SearchResult {
     Success(Vec<TrackItem>),
+    RelatedLoaded(Vec<TrackItem>),
     PlaylistLoaded(crate::storage::PlaylistItem),
     UserProfileLoaded(UserProfile),
     LibraryLoaded { likes: Vec<TrackItem>, playlists: Vec<crate::storage::PlaylistItem> },
@@ -27,6 +28,7 @@ pub enum SearchResult {
 
 pub enum SearchTask {
     Query(String, bool),
+    FetchRelated(String), // track_id
     FetchUser(String), // username, permalink or user_id
     FetchLibrary(String), // oauth_token
 }
@@ -50,6 +52,10 @@ impl SearchEngine {
                 match task {
                     SearchTask::Query(query, is_direct_url) => {
                         let result = Self::execute_search(&query, is_direct_url, &cid_clone);
+                        let _ = res_tx.send(result);
+                    }
+                    SearchTask::FetchRelated(track_id) => {
+                        let result = Self::execute_fetch_related(&track_id, &cid_clone);
                         let _ = res_tx.send(result);
                     }
                     SearchTask::FetchUser(user_query) => {
@@ -77,6 +83,12 @@ impl SearchEngine {
             || query.starts_with("soundcloud.com/")
             || query.starts_with("snd.sc/");
         let _ = self.tx.send(SearchTask::Query(query.to_string(), is_url));
+    }
+
+    pub fn fetch_related(&self, track_id: &str) {
+        if !track_id.is_empty() {
+            let _ = self.tx.send(SearchTask::FetchRelated(track_id.to_string()));
+        }
     }
 
     pub fn fetch_user(&self, user_query: &str) {
@@ -812,6 +824,95 @@ impl SearchEngine {
         } else {
             SearchResult::Success(tracks)
         }
+    }
+
+    fn execute_fetch_related(track_id: &str, cached_cid: &Arc<Mutex<Option<String>>>) -> SearchResult {
+        let cid = {
+            let guard = cached_cid.lock().unwrap();
+            guard.clone().unwrap_or_else(|| "QhVEWrrJKvW4uSU5u5EoI0FTXYUGzy5k".to_string())
+        };
+
+        let mut candidate_cids = vec![cid.as_str()];
+        if !candidate_cids.contains(&"QhVEWrrJKvW4uSU5u5EoI0FTXYUGzy5k") {
+            candidate_cids.push("QhVEWrrJKvW4uSU5u5EoI0FTXYUGzy5k");
+        }
+        if !candidate_cids.contains(&"tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ") {
+            candidate_cids.push("tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ");
+        }
+
+        for scid in candidate_cids {
+            let api_url = format!(
+                "https://api-v2.soundcloud.com/tracks/{}/related?client_id={}&limit=15",
+                track_id, scid
+            );
+
+            let output = Command::new("curl")
+                .arg("-s")
+                .arg("-m")
+                .arg("5")
+                .arg("-H")
+                .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
+                .arg(&api_url)
+                .output();
+
+            if let Ok(out) = output {
+                if out.status.success() {
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                        if let Some(collection) = v.get("collection").and_then(|c| c.as_array()) {
+                            let mut tracks = Vec::new();
+                            for item in collection {
+                                let id = item.get("id").map(|i| i.to_string()).unwrap_or_default();
+                                let title = item.get("title").and_then(|t| t.as_str()).unwrap_or("Unknown").to_string();
+                                let artist = item
+                                    .get("publisher_metadata")
+                                    .and_then(|pm| pm.get("artist"))
+                                    .and_then(|a| a.as_str())
+                                    .filter(|s| !s.trim().is_empty())
+                                    .or_else(|| item.get("user").and_then(|u| u.get("username")).and_then(|u| u.as_str()))
+                                    .unwrap_or("SoundCloud")
+                                    .to_string();
+                                let url = item.get("permalink_url").and_then(|u| u.as_str()).unwrap_or("").to_string();
+                                let duration = item.get("duration").and_then(|d| d.as_f64()).map(|ms| ms / 1000.0).unwrap_or(0.0);
+                                let artwork_url = item.get("artwork_url").and_then(|a| a.as_str()).map(|s| s.to_string());
+                                let waveform_url = item.get("waveform_url").and_then(|w| w.as_str()).map(|s| s.to_string());
+                                let user_permalink = item.get("user").and_then(|u| u.get("permalink")).and_then(|p| p.as_str()).map(|s| s.to_string());
+                                let user_id = item.get("user").and_then(|u| u.get("id")).map(|i| i.to_string());
+
+                                let transcoding_url = item
+                                    .get("media")
+                                    .and_then(|m| m.get("transcodings"))
+                                    .and_then(|t| t.as_array())
+                                    .and_then(|arr| Self::choose_best_transcoding(arr))
+                                    .map(|s| s.to_string());
+
+                                if !url.is_empty() && !title.is_empty() && !id.is_empty() {
+                                    tracks.push(TrackItem {
+                                        id,
+                                        title,
+                                        artist,
+                                        duration,
+                                        url,
+                                        stream_url: transcoding_url,
+                                        artwork_url,
+                                        waveform_url,
+                                        user_permalink,
+                                        user_id,
+                                    });
+                                }
+                            }
+                            if !tracks.is_empty() {
+                                if let Ok(mut g) = cached_cid.lock() {
+                                    *g = Some(scid.to_string());
+                                }
+                                return SearchResult::RelatedLoaded(tracks);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        SearchResult::Error("No related tracks found".to_string())
     }
 
     fn execute_fetch_user(user_query: &str, cached_cid: &Arc<Mutex<Option<String>>>) -> SearchResult {

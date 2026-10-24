@@ -1,7 +1,8 @@
 use crate::audio::AudioPlayer;
 use crate::search::{SearchEngine, SearchResult};
 use crate::storage::{DataStore, ThemeColor, TrackItem, VisualStyle};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
 use ratatui::style::Color;
 use std::time::Instant;
 
@@ -115,6 +116,8 @@ pub struct App {
     pub shuffle: bool,
     pub repeat: RepeatMode,
     pub prefetched_track_id: Option<String>,
+    pub related_fetched_for_id: Option<String>,
+    pub pending_auto_wave_play: bool,
 
     // Dynamic waveform samples
     pub current_waveform: Vec<u8>,
@@ -189,6 +192,8 @@ impl App {
             shuffle: false,
             repeat: RepeatMode::Off,
             prefetched_track_id: None,
+            related_fetched_for_id: None,
+            pending_auto_wave_play: false,
             current_waveform: Vec::new(),
             loaded_waveform_track_id: None,
             status_message: Some(("Ready. Type to search SoundCloud".to_string(), Instant::now())),
@@ -448,7 +453,16 @@ impl App {
         let next_idx = match self.current_track_idx {
             Some(i) if i + 1 < self.queue.len() => i + 1,
             _ => {
-                if self.repeat == RepeatMode::All || self.repeat == RepeatMode::Off {
+                if self.repeat == RepeatMode::Off {
+                    if let Some(cur) = self.current_track().cloned() {
+                        self.pending_auto_wave_play = true;
+                        self.related_fetched_for_id = Some(cur.id.clone());
+                        self.set_status("Auto-Wave: loading related tracks...");
+                        self.search_engine.fetch_related(&cur.id);
+                        return;
+                    }
+                    0
+                } else if self.repeat == RepeatMode::All {
                     0
                 } else {
                     return;
@@ -513,8 +527,10 @@ impl App {
         }
         if (clamped - 1.0).abs() < 0.001 {
             self.set_status("Speed: 1.00x (Normal)");
+        } else if clamped < 1.0 {
+            self.set_status(&format!("Speed: {:.2}x (Slowed)", clamped));
         } else {
-            self.set_status(&format!("Speed: {:.2}x", clamped));
+            self.set_status(&format!("Speed: {:.2}x (Speed Up)", clamped));
         }
     }
 
@@ -945,6 +961,17 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('o') | KeyCode::Char('щ') | KeyCode::Char('Щ') => {
+                self.copy_track_link();
+            }
+            KeyCode::Char('w') | KeyCode::Char('ц') | KeyCode::Char('Ц') => {
+                if let Some(track) = self.selected_or_current_track() {
+                    self.pending_auto_wave_play = false;
+                    self.related_fetched_for_id = Some(track.id.clone());
+                    self.set_status(&format!("Loading related tracks wave for '{}'...", track.title));
+                    self.search_engine.fetch_related(&track.id);
+                }
+            }
             KeyCode::Char('i') | KeyCode::Char('ш') | KeyCode::Char('Ш') => {
                 self.view_mode = ViewMode::Search;
                 self.is_editing_search = true;
@@ -1259,11 +1286,23 @@ impl App {
         if self.total_duration > 15.0 && (self.current_pos / self.total_duration) >= 0.70 {
             if let Some(cur_idx) = self.current_track_idx {
                 if !self.queue.is_empty() {
-                    let next_idx = (cur_idx + 1) % self.queue.len();
-                    if let Some(next_track) = self.queue.get(next_idx) {
-                        if self.prefetched_track_id.as_deref() != Some(&next_track.id) {
-                            self.prefetched_track_id = Some(next_track.id.clone());
-                            SearchEngine::prefetch_track(next_track, &self.search_engine.cached_client_id);
+                    if cur_idx + 1 < self.queue.len() {
+                        let next_idx = cur_idx + 1;
+                        if let Some(next_track) = self.queue.get(next_idx) {
+                            if self.prefetched_track_id.as_deref() != Some(&next_track.id) {
+                                self.prefetched_track_id = Some(next_track.id.clone());
+                                SearchEngine::prefetch_track(next_track, &self.search_engine.cached_client_id);
+                            }
+                        }
+                    } else if self.repeat == RepeatMode::Off && !self.shuffle {
+                        // Auto-Wave: prefetch related tracks when on the last track of queue at >= 80%
+                        if (self.current_pos / self.total_duration) >= 0.80 {
+                            if let Some(cur_track) = self.queue.get(cur_idx) {
+                                if self.related_fetched_for_id.as_deref() != Some(&cur_track.id) {
+                                    self.related_fetched_for_id = Some(cur_track.id.clone());
+                                    self.search_engine.fetch_related(&cur_track.id);
+                                }
+                            }
                         }
                     }
                 }
@@ -1295,6 +1334,7 @@ impl App {
                     self.discord.update(
                         &track.title,
                         &track.artist,
+                        Some(track.url.clone()),
                         track.artwork_url.clone(),
                         self.current_pos,
                         self.total_duration,
@@ -1376,10 +1416,316 @@ impl App {
                     self.store.save();
                     self.set_status(&format!("Synced library: {} likes, {} playlists", likes_len, pl_len));
                 }
+                SearchResult::RelatedLoaded(tracks) => {
+                    let first_new_idx = self.queue.len();
+                    let mut added = 0usize;
+                    for t in tracks {
+                        if !self.queue.iter().any(|existing| existing.url == t.url || existing.id == t.id) {
+                            self.queue.push(t);
+                            added += 1;
+                        }
+                    }
+                    if self.pending_auto_wave_play {
+                        self.pending_auto_wave_play = false;
+                        if first_new_idx < self.queue.len() {
+                            let track = self.queue[first_new_idx].clone();
+                            self.current_track_idx = Some(first_new_idx);
+                            self.play_track(track);
+                        } else if !self.queue.is_empty() {
+                            let track = self.queue[0].clone();
+                            self.current_track_idx = Some(0);
+                            self.play_track(track);
+                        }
+                    } else if added > 0 {
+                        self.set_status(&format!("Wave: added {} related tracks to queue", added));
+                    } else {
+                        self.set_status("Wave: no new related tracks found");
+                    }
+                }
                 SearchResult::Error(err) => {
                     self.set_status(&format!("Error: {}", err));
                 }
             }
+        }
+    }
+
+    pub fn selected_or_current_track(&self) -> Option<TrackItem> {
+        let from_view = match self.view_mode {
+            ViewMode::Search => self.search_results.get(self.search_cursor).cloned(),
+            ViewMode::Queue => self.queue.get(self.queue_cursor).cloned(),
+            ViewMode::Favorites => self.store.liked.get(self.favorites_cursor).cloned(),
+            ViewMode::History => self.store.history.get(self.history_cursor).map(|h| h.track.clone()),
+            ViewMode::PlaylistDetail => self
+                .selected_playlist_idx
+                .and_then(|i| self.store.playlists.get(i))
+                .and_then(|p| p.tracks.get(self.playlist_detail_cursor).cloned()),
+            ViewMode::UserProfile => self
+                .current_user_profile
+                .as_ref()
+                .and_then(|p| p.tracks.get(self.user_profile_cursor).cloned()),
+            _ => None,
+        };
+        from_view.or_else(|| self.current_track().cloned())
+    }
+
+    pub fn copy_track_link(&mut self) {
+        let Some(track) = self.selected_or_current_track() else {
+            self.set_status("No track selected to copy link");
+            return;
+        };
+        let clean_url = track
+            .url
+            .split('#')
+            .next()
+            .unwrap_or(&track.url)
+            .split('?')
+            .next()
+            .unwrap_or(&track.url)
+            .to_string();
+
+        let copied = Self::write_to_clipboard(&clean_url);
+        if copied {
+            self.set_status(&format!("Copied link: {}", clean_url));
+        } else {
+            self.set_status(&format!("Link: {}", clean_url));
+        }
+    }
+
+    fn write_to_clipboard(text: &str) -> bool {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        let candidates: &[(&str, &[&str])] = &[
+            ("wl-copy", &[]),
+            ("xclip", &["-selection", "clipboard"]),
+            ("xsel", &["-ib"]),
+            ("pbcopy", &[]),
+        ];
+
+        for (bin, args) in candidates {
+            if let Ok(mut child) = Command::new(bin)
+                .args(*args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                if let Some(mut stdin) = child.stdin.take() {
+                    if stdin.write_all(text.as_bytes()).is_ok() {
+                        drop(stdin);
+                        if let Ok(status) = child.wait() {
+                            if status.success() {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    pub fn handle_mouse(&mut self, mouse: MouseEvent, area: Rect) {
+        if area.width < 30 || area.height < 8 {
+            return;
+        }
+        if self.modal_input.is_some() || self.modal_target_track.is_some() {
+            return;
+        }
+
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                if mouse.row >= area.height.saturating_sub(3) {
+                    self.adjust_volume(5);
+                } else {
+                    self.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if mouse.row >= area.height.saturating_sub(3) {
+                    self.adjust_volume(-5);
+                } else {
+                    self.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                let row = mouse.row;
+                let col = mouse.column as usize;
+                let width = area.width as usize;
+
+                // Row 0: Top status bar -> cycle views
+                if row == 0 {
+                    self.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+                    return;
+                }
+
+                // Player tape line 1 (track title / play-pause icon): toggle pause
+                if row == area.height.saturating_sub(3) {
+                    self.toggle_pause();
+                    return;
+                }
+
+                // Player tape line 2 (waveform progress bar): seek to clicked position
+                if row == area.height.saturating_sub(2) {
+                    if self.total_duration > 0.0 {
+                        let bar_width = width.saturating_sub(24).clamp(12, 70);
+                        let total_line_width = bar_width + 12;
+                        let start_x = width.saturating_sub(total_line_width) / 2;
+                        let bar_start_x = start_x + 6;
+                        if col >= bar_start_x && col < bar_start_x + bar_width {
+                            let ratio = ((col - bar_start_x) as f64 / bar_width as f64).clamp(0.0, 1.0);
+                            let target = ratio * self.total_duration;
+                            self.player.seek_to(target);
+                            self.current_pos = target;
+                            self.set_status(&format!("Seek: {}", crate::ui::format_duration(target)));
+                        }
+                    }
+                    return;
+                }
+
+                // Main content area: rows 2 .. area.height - 4
+                let content_top = 2u16;
+                let content_bottom = area.height.saturating_sub(4);
+                if row < content_top || row >= content_bottom {
+                    return;
+                }
+
+                match self.view_mode {
+                    ViewMode::Search => {
+                        if row == 2 {
+                            self.is_editing_search = true;
+                            return;
+                        }
+                        if row >= 4 {
+                            self.is_editing_search = false;
+                            let list_height = content_bottom.saturating_sub(4) as usize;
+                            if list_height == 0 || self.search_results.is_empty() {
+                                return;
+                            }
+                            let scroll_offset = if self.search_cursor >= list_height {
+                                self.search_cursor - list_height + 1
+                            } else {
+                                0
+                            };
+                            let clicked_idx = scroll_offset + (row - 4) as usize;
+                            if clicked_idx < self.search_results.len() {
+                                self.search_cursor = clicked_idx;
+                                self.play_selected_in_current_view();
+                            }
+                        }
+                    }
+                    ViewMode::Queue => {
+                        let list_height = (content_bottom - content_top) as usize;
+                        if list_height == 0 || self.queue.is_empty() {
+                            return;
+                        }
+                        let scroll_offset = if self.queue_cursor >= list_height {
+                            self.queue_cursor - list_height + 1
+                        } else {
+                            0
+                        };
+                        let clicked_idx = scroll_offset + (row - content_top) as usize;
+                        if clicked_idx < self.queue.len() {
+                            self.queue_cursor = clicked_idx;
+                            self.play_selected_in_current_view();
+                        }
+                    }
+                    ViewMode::Playlists => {
+                        let list_height = (content_bottom - content_top) as usize;
+                        if list_height == 0 || self.store.playlists.is_empty() {
+                            return;
+                        }
+                        let scroll_offset = if self.playlists_cursor >= list_height {
+                            self.playlists_cursor - list_height + 1
+                        } else {
+                            0
+                        };
+                        let clicked_idx = scroll_offset + (row - content_top) as usize;
+                        if clicked_idx < self.store.playlists.len() {
+                            self.playlists_cursor = clicked_idx;
+                            self.play_selected_in_current_view();
+                        }
+                    }
+                    ViewMode::PlaylistDetail => {
+                        if row >= 4 {
+                            let list_height = content_bottom.saturating_sub(4) as usize;
+                            let Some(pl_idx) = self.selected_playlist_idx else { return };
+                            let Some(pl_len) = self.store.playlists.get(pl_idx).map(|p| p.tracks.len()) else { return };
+                            if list_height == 0 || pl_len == 0 {
+                                return;
+                            }
+                            let scroll_offset = if self.playlist_detail_cursor >= list_height {
+                                self.playlist_detail_cursor - list_height + 1
+                            } else {
+                                0
+                            };
+                            let clicked_idx = scroll_offset + (row - 4) as usize;
+                            if clicked_idx < pl_len {
+                                self.playlist_detail_cursor = clicked_idx;
+                                self.play_selected_in_current_view();
+                            }
+                        }
+                    }
+                    ViewMode::UserProfile => {
+                        if row >= 4 {
+                            let list_height = content_bottom.saturating_sub(4) as usize;
+                            let Some(tr_len) = self.current_user_profile.as_ref().map(|p| p.tracks.len()) else { return };
+                            if list_height == 0 || tr_len == 0 {
+                                return;
+                            }
+                            let scroll_offset = if self.user_profile_cursor >= list_height {
+                                self.user_profile_cursor - list_height + 1
+                            } else {
+                                0
+                            };
+                            let clicked_idx = scroll_offset + (row - 4) as usize;
+                            if clicked_idx < tr_len {
+                                self.user_profile_cursor = clicked_idx;
+                                self.play_selected_in_current_view();
+                            }
+                        }
+                    }
+                    ViewMode::Favorites => {
+                        let list_height = (content_bottom - content_top) as usize;
+                        if list_height == 0 || self.store.liked.is_empty() {
+                            return;
+                        }
+                        let scroll_offset = if self.favorites_cursor >= list_height {
+                            self.favorites_cursor - list_height + 1
+                        } else {
+                            0
+                        };
+                        let clicked_idx = scroll_offset + (row - content_top) as usize;
+                        if clicked_idx < self.store.liked.len() {
+                            self.favorites_cursor = clicked_idx;
+                            self.play_selected_in_current_view();
+                        }
+                    }
+                    ViewMode::History => {
+                        let list_height = (content_bottom - content_top) as usize;
+                        if list_height == 0 || self.store.history.is_empty() {
+                            return;
+                        }
+                        let scroll_offset = if self.history_cursor >= list_height {
+                            self.history_cursor - list_height + 1
+                        } else {
+                            0
+                        };
+                        let clicked_idx = scroll_offset + (row - content_top) as usize;
+                        if clicked_idx < self.store.history.len() {
+                            self.history_cursor = clicked_idx;
+                            self.play_selected_in_current_view();
+                        }
+                    }
+                    ViewMode::Settings => {
+                        self.cycle_setting();
+                    }
+                    ViewMode::Lyrics => {
+                        self.toggle_pause();
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }

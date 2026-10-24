@@ -12,6 +12,7 @@ pub enum RpcCommand {
     Update {
         title: String,
         artist: String,
+        track_url: Option<String>,
         artwork_url: Option<String>,
         start_timestamp: Option<u64>,
         end_timestamp: Option<u64>,
@@ -47,6 +48,7 @@ impl DiscordRpc {
                     RpcCommand::Update {
                         title,
                         artist,
+                        track_url,
                         artwork_url,
                         start_timestamp,
                         end_timestamp,
@@ -100,6 +102,17 @@ impl DiscordRpc {
                                 }
                             });
 
+                            if let Some(ref u) = track_url {
+                                if u.starts_with("https://") || u.starts_with("http://") {
+                                    activity["buttons"] = serde_json::json!([
+                                        {
+                                            "label": "Listen on SoundCloud",
+                                            "url": u
+                                        }
+                                    ]);
+                                }
+                            }
+
                             if !is_paused {
                                 if let (Some(start), Some(end)) = (start_timestamp, end_timestamp) {
                                     if end > start {
@@ -124,7 +137,27 @@ impl DiscordRpc {
                                 stream = None;
                                 last_state = None;
                             } else {
-                                let _ = Self::read_ipc(s);
+                                if let Ok((_, resp_bytes)) = Self::read_ipc(s) {
+                                    if let Ok(resp_val) = serde_json::from_slice::<serde_json::Value>(&resp_bytes) {
+                                        if resp_val.get("evt").and_then(|e| e.as_str()) == Some("ERROR") {
+                                            // Fallback without buttons if rejected by strict RPC schema
+                                            if let Some(obj) = activity.as_object_mut() {
+                                                obj.remove("buttons");
+                                            }
+                                            let retry_payload = serde_json::json!({
+                                                "cmd": "SET_ACTIVITY",
+                                                "args": {
+                                                    "pid": std::process::id(),
+                                                    "activity": activity
+                                                },
+                                                "nonce": "sctui-nonce-retry"
+                                            });
+                                            if Self::send_ipc(s, 1, &retry_payload).is_ok() {
+                                                let _ = Self::read_ipc(s);
+                                            }
+                                        }
+                                    }
+                                }
                                 last_state = Some(LastSentState {
                                     title,
                                     artist,
@@ -252,6 +285,7 @@ impl DiscordRpc {
         &self,
         title: &str,
         artist: &str,
+        track_url: Option<String>,
         artwork_url: Option<String>,
         current_pos: f64,
         total_dur: f64,
@@ -274,6 +308,7 @@ impl DiscordRpc {
             let _ = tx.send(RpcCommand::Update {
                 title: title.to_string(),
                 artist: artist.to_string(),
+                track_url,
                 artwork_url,
                 start_timestamp: start,
                 end_timestamp: end,
