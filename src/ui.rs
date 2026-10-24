@@ -403,58 +403,99 @@ fn render_playlist_detail_view(f: &mut Frame, app: &App, area: Rect) {
     let total_secs: f64 = playlist.tracks.iter().map(|t| t.duration).sum();
     let duration_str = format_duration(total_secs);
 
+    let has_cover = playlist.artwork_url.is_some();
+    let banner_h = if has_cover {
+        if area.height >= 34 {
+            16
+        } else if area.height >= 24 {
+            14
+        } else {
+            10
+        }
+    } else {
+        5
+    };
+    let cover_w = banner_h * 2; // Perfect visual 1:1 square in terminal fonts
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(14), // Banner with cover
-            Constraint::Length(1), // Spacer
-            Constraint::Fill(1),   // Tracks
+            Constraint::Length(banner_h), // Banner with or without cover
+            Constraint::Length(1),        // Spacer
+            Constraint::Fill(1),          // Tracks
         ])
         .split(area);
 
-    // Beautiful header banner
-    let art_status = if let Some(ref art) = playlist.artwork_url {
-        { let _ = art; "cover set".to_string() }
-    } else {
-        "no cover (press 'Shift+C' to set)".to_string()
-    };
-
-    let banner_lines = vec![
-        Line::from(vec![
-            Span::styled("  ╭─ ", Style::default().fg(accent)),
-            Span::styled(&playlist.title, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("  [{} tracks · {}]", playlist.track_count, duration_str), Style::default().fg(accent)),
-        ]),
-        Line::from(vec![
-            Span::styled("  │  ", Style::default().fg(accent)),
-            Span::styled(format!("Curated by: @{}", playlist.author), Style::default().fg(Color::Rgb(150, 150, 150))),
-            Span::styled(format!("  •  {}", art_status), Style::default().fg(Color::Rgb(95, 95, 95))),
-        ]),
-        Line::from(vec![
-            Span::styled("  │  ", Style::default().fg(accent)),
-            Span::styled("Actions: ", Style::default().fg(Color::Rgb(110, 110, 110))),
-            Span::styled("Enter ", Style::default().fg(Color::White)),
-            Span::styled("play track  •  ", Style::default().fg(Color::Rgb(80, 80, 80))),
-            Span::styled("Shift+C ", Style::default().fg(Color::White)),
-            Span::styled("set/change cover image URL  •  ", Style::default().fg(Color::Rgb(80, 80, 80))),
-            Span::styled("d ", Style::default().fg(Color::White)),
-            Span::styled("remove track  •  ", Style::default().fg(Color::Rgb(80, 80, 80))),
-            Span::styled("Esc ", Style::default().fg(Color::White)),
-            Span::styled("back", Style::default().fg(Color::Rgb(80, 80, 80))),
-        ]),
-        Line::from(Span::styled("  ╰─────────────────────────────────────────────────────────────────────────────", Style::default().fg(Color::Rgb(45, 45, 45)))),
-    ];
-    let banner = Paragraph::new(banner_lines);
     if let Some(ref art) = playlist.artwork_url {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(2), Constraint::Length(28), Constraint::Length(2), Constraint::Fill(1)])
+            .constraints([
+                Constraint::Length(2),          // Left margin
+                Constraint::Length(cover_w),    // High-res square cover
+                Constraint::Length(3),          // Gap
+                Constraint::Fill(1),            // Info metadata block
+            ])
             .split(chunks[0]);
+
         render_cover(f, art, cols[1], accent);
-        let text_area = Rect { y: cols[3].y + 4, height: cols[3].height.saturating_sub(4), ..cols[3] };
-        f.render_widget(banner, text_area);
+
+        let info_lines = vec![
+            Line::from(vec![
+                Span::styled("╭─ ", Style::default().fg(accent)),
+                Span::styled("PLAYLIST", Style::default().fg(accent).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("  [{} tracks · {}]", playlist.track_count, duration_str), Style::default().fg(Color::Rgb(130, 130, 130))),
+            ]),
+            Line::from(vec![
+                Span::styled("│  ", Style::default().fg(accent)),
+                Span::styled(&playlist.title, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(vec![
+                Span::styled("│  ", Style::default().fg(accent)),
+                Span::styled("Curated by: ", Style::default().fg(Color::Rgb(100, 100, 100))),
+                Span::styled(format!("@{}", playlist.author), Style::default().fg(Color::Rgb(180, 180, 180))),
+            ]),
+            Line::from(vec![
+                Span::styled("│  ", Style::default().fg(accent)),
+                Span::styled("Actions: ", Style::default().fg(Color::Rgb(110, 110, 110))),
+                Span::styled("Enter ", Style::default().fg(Color::White)),
+                Span::styled("play  •  ", Style::default().fg(Color::Rgb(80, 80, 80))),
+                Span::styled("Shift+C ", Style::default().fg(Color::White)),
+                Span::styled("cover  •  ", Style::default().fg(Color::Rgb(80, 80, 80))),
+                Span::styled("d ", Style::default().fg(Color::White)),
+                Span::styled("delete  •  ", Style::default().fg(Color::Rgb(80, 80, 80))),
+                Span::styled("Esc ", Style::default().fg(Color::White)),
+                Span::styled("back", Style::default().fg(Color::Rgb(80, 80, 80))),
+            ]),
+            Line::from(Span::styled("╰─────────────────────────────────────────────────────────────────────────────", Style::default().fg(Color::Rgb(45, 45, 45)))),
+        ];
+        f.render_widget(Paragraph::new(info_lines), cols[3]);
     } else {
-        f.render_widget(banner, chunks[0]);
+        let banner_lines = vec![
+            Line::from(vec![
+                Span::styled("  ╭─ ", Style::default().fg(accent)),
+                Span::styled(&playlist.title, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("  [{} tracks · {}]", playlist.track_count, duration_str), Style::default().fg(accent)),
+            ]),
+            Line::from(vec![
+                Span::styled("  │  ", Style::default().fg(accent)),
+                Span::styled(format!("Curated by: @{}", playlist.author), Style::default().fg(Color::Rgb(150, 150, 150))),
+                Span::styled("  •  no cover (press 'Shift+C' to set)", Style::default().fg(Color::Rgb(95, 95, 95))),
+            ]),
+            Line::from(vec![
+                Span::styled("  │  ", Style::default().fg(accent)),
+                Span::styled("Actions: ", Style::default().fg(Color::Rgb(110, 110, 110))),
+                Span::styled("Enter ", Style::default().fg(Color::White)),
+                Span::styled("play track  •  ", Style::default().fg(Color::Rgb(80, 80, 80))),
+                Span::styled("Shift+C ", Style::default().fg(Color::White)),
+                Span::styled("set/change cover image URL  •  ", Style::default().fg(Color::Rgb(80, 80, 80))),
+                Span::styled("d ", Style::default().fg(Color::White)),
+                Span::styled("remove track  •  ", Style::default().fg(Color::Rgb(80, 80, 80))),
+                Span::styled("Esc ", Style::default().fg(Color::White)),
+                Span::styled("back", Style::default().fg(Color::Rgb(80, 80, 80))),
+            ]),
+            Line::from(Span::styled("  ╰─────────────────────────────────────────────────────────────────────────────", Style::default().fg(Color::Rgb(45, 45, 45)))),
+        ];
+        f.render_widget(Paragraph::new(banner_lines), chunks[0]);
     }
 
     if playlist.tracks.is_empty() {
@@ -1159,13 +1200,18 @@ fn render_bottom_bar(f: &mut Frame, _app: &App, area: Rect) {
     f.render_widget(p, area);
 }
 
-// ---- Cover image rendering (half-block truecolor) ----
-const N: usize = 128;
-type CoverPixels = Vec<Vec<(u8, u8, u8)>>;
+// ---- Cover image rendering (high-res Lanczos3 half-block truecolor) ----
+struct CoverData {
+    img: image::RgbImage,
+    scaled_w: u16,
+    scaled_h: u16,
+    lines: Vec<Line<'static>>,
+}
+
 enum CoverState {
     Loading,
     Failed,
-    Ready(CoverPixels),
+    Ready(CoverData),
 }
 
 static COVER_CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, CoverState>>> =
@@ -1175,85 +1221,98 @@ fn cover_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, 
     COVER_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
-fn load_cover(url: &str) -> Option<CoverPixels> {
-    let out = std::process::Command::new("curl")
-        .args(["-s", "-L", "-m", "10", "-A", "Mozilla/5.0", url])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let img = image::load_from_memory(&out.stdout).ok()?.to_rgb8();
-    let thumb = image::imageops::resize(&img, N as u32, N as u32, image::imageops::FilterType::Lanczos3);
-    let mut rows = Vec::new();
-    for y in 0..N as u32 {
-        rows.push((0..N as u32).map(|x| { let p = thumb.get_pixel(x, y); (p[0], p[1], p[2]) }).collect());
-    }
-    Some(rows)
-}
-
 fn render_cover(f: &mut Frame, url: &str, area: Rect, accent: Color) {
     if area.width == 0 || area.height == 0 {
         return;
     }
     let mut spawn = false;
-    let lines: Vec<Line> = {
+    let lines_to_draw: Option<Vec<Line<'static>>> = {
         let mut cache = cover_cache().lock().unwrap();
         if !cache.contains_key(url) {
             cache.insert(url.to_string(), CoverState::Loading);
             spawn = true;
         }
-        match cache.get(url) {
-            Some(CoverState::Ready(px)) => {
-                let w = area.width as usize;
-                let h = area.height as usize * 2;
-                let avg = |px: &CoverPixels, row: usize, col: usize, rows: usize, cols: usize| -> Color {
-                    let y0 = row * N / rows;
-                    let y1 = ((row + 1) * N / rows).max(y0 + 1).min(N);
-                    let x0 = col * N / cols;
-                    let x1 = ((col + 1) * N / cols).max(x0 + 1).min(N);
-                    let (mut r, mut g, mut b, mut n) = (0u32, 0u32, 0u32, 0u32);
-                    for y in y0..y1 {
-                        for x in x0..x1 {
-                            let p = px[y][x];
-                            r += p.0 as u32;
-                            g += p.1 as u32;
-                            b += p.2 as u32;
-                            n += 1;
+        match cache.get_mut(url) {
+            Some(CoverState::Ready(data)) => {
+                let target_w = area.width;
+                let target_h = area.height;
+                if data.scaled_w != target_w || data.scaled_h != target_h {
+                    let px_w = target_w as u32;
+                    let px_h = (target_h as u32) * 2;
+                    let thumb = image::imageops::resize(&data.img, px_w, px_h, image::imageops::FilterType::Lanczos3);
+                    let mut lines = Vec::with_capacity(target_h as usize);
+                    for row in 0..target_h {
+                        let mut spans = Vec::with_capacity(target_w as usize);
+                        let y_top = (row as u32) * 2;
+                        let y_bot = y_top + 1;
+                        for col in 0..target_w {
+                            let p_top = thumb.get_pixel(col as u32, y_top);
+                            let p_bot = thumb.get_pixel(col as u32, y_bot);
+                            spans.push(Span::styled(
+                                "▀",
+                                Style::default()
+                                    .fg(Color::Rgb(p_top[0], p_top[1], p_top[2]))
+                                    .bg(Color::Rgb(p_bot[0], p_bot[1], p_bot[2])),
+                            ));
                         }
+                        lines.push(Line::from(spans));
                     }
-                    let n = n.max(1);
-                    Color::Rgb((r / n) as u8, (g / n) as u8, (b / n) as u8)
-                };
-                (0..area.height as usize)
-                    .map(|row| {
-                        let spans: Vec<Span> = (0..w)
-                            .map(|col| {
-                                Span::styled(
-                                    "▀",
-                                    Style::default()
-                                        .fg(avg(px, row * 2, col, h, w))
-                                        .bg(avg(px, row * 2 + 1, col, h, w)),
-                                )
-                            })
-                            .collect();
-                        Line::from(spans)
-                    })
-                    .collect()
+                    data.scaled_w = target_w;
+                    data.scaled_h = target_h;
+                    data.lines = lines;
+                }
+                Some(data.lines.clone())
             }
-            Some(CoverState::Failed) => vec![Line::from(Span::styled("cover failed", Style::default().fg(Color::Rgb(90, 90, 90))))],
-            _ => vec![Line::from(Span::styled("loading cover…", Style::default().fg(accent)))],
+            _ => None,
         }
     };
+
     if spawn {
         let u = url.to_string();
         std::thread::spawn(move || {
-            let st = match load_cover(&u) {
-                Some(p) => CoverState::Ready(p),
-                None => CoverState::Failed,
-            };
-            cover_cache().lock().unwrap().insert(u, st);
+            let res = std::process::Command::new("curl")
+                .args(["-s", "-L", "-m", "10", "-A", "Mozilla/5.0", &u])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| image::load_from_memory(&o.stdout).ok())
+                .map(|img| img.to_rgb8());
+
+            let mut cache = cover_cache().lock().unwrap();
+            match res {
+                Some(img) => {
+                    cache.insert(u, CoverState::Ready(CoverData {
+                        img,
+                        scaled_w: 0,
+                        scaled_h: 0,
+                        lines: Vec::new(),
+                    }));
+                }
+                None => {
+                    cache.insert(u, CoverState::Failed);
+                }
+            }
         });
     }
-    f.render_widget(Paragraph::new(lines), area);
+
+    if let Some(lines) = lines_to_draw {
+        f.render_widget(Paragraph::new(lines), area);
+    } else {
+        let is_failed = {
+            let cache = cover_cache().lock().unwrap();
+            matches!(cache.get(url), Some(CoverState::Failed))
+        };
+        let label = if is_failed { "No Cover" } else { "◌ Loading..." };
+        let border_color = if is_failed { Color::Rgb(60, 60, 60) } else { accent };
+        let block = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .border_style(Style::default().fg(border_color));
+        let p = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled(label, Style::default().fg(border_color))),
+        ])
+        .block(block)
+        .alignment(Alignment::Center);
+        f.render_widget(p, area);
+    }
 }

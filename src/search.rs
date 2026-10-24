@@ -421,6 +421,37 @@ impl SearchEngine {
             }
         }
 
+        // 6. Absolute universal fallback: search YouTube for "{artist} {title}"
+        let clean_title = track.title.trim();
+        let clean_artist = track.artist.trim();
+        if !clean_title.is_empty() {
+            let yt_query = format!("ytsearch1:{} {}", clean_artist, clean_title);
+            let ytdl_out = Command::new("yt-dlp")
+                .arg("-4")
+                .arg("-g")
+                .arg("-f")
+                .arg("http_mp3_1_0/hls_mp3_1_0/hls_opus_0_0/bestaudio/best")
+                .arg("--no-playlist")
+                .arg("--no-warnings")
+                .arg(&yt_query)
+                .output()
+                .ok();
+
+            if let Some(out) = ytdl_out {
+                if out.status.success() {
+                    let resolved = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").trim().to_string();
+                    if resolved.starts_with("http") {
+                        let track_id_clean = track.id.clone();
+                        let stream_copy = resolved.clone();
+                        thread::spawn(move || {
+                            Self::download_to_cache(&track_id_clean, &stream_copy);
+                        });
+                        return Some(resolved);
+                    }
+                }
+            }
+        }
+
         None
     }
 
@@ -647,17 +678,35 @@ impl SearchEngine {
             }
             let Ok(val) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { continue };
             let Some(col) = val.get("collection").and_then(|c| c.as_array()) else { continue };
-            // Prefer fully playable, non-snipped tracks whose title matches
+            // Prefer fully playable, non-DRM, unencrypted tracks whose title matches
             let playable = |it: &&serde_json::Value| {
-                it.get("policy").and_then(|p| p.as_str()).map(|p| p != "BLOCK").unwrap_or(true)
-                    && it.get("media").and_then(|m| m.get("transcodings")).and_then(|t| t.as_array()).map(|t| !t.is_empty()).unwrap_or(false)
-                    && it.get("duration").and_then(|d| d.as_f64()).map(|d| raw.duration <= 0.0 || (d / 1000.0 - raw.duration).abs() < 40.0 || d / 1000.0 > raw.duration * 0.8).unwrap_or(true)
+                let policy_ok = it.get("policy").and_then(|p| p.as_str()).map(|p| p == "ALLOW").unwrap_or(true);
+                let has_clear_stream = it
+                    .get("media")
+                    .and_then(|m| m.get("transcodings"))
+                    .and_then(|t| t.as_array())
+                    .map(|t| {
+                        t.iter().any(|tr| {
+                            let proto = tr.get("format").and_then(|f| f.get("protocol")).and_then(|p| p.as_str()).unwrap_or("");
+                            (proto == "progressive" || proto == "hls") && !proto.contains("encrypted") && !proto.contains("cbc") && !proto.contains("ctr")
+                        })
+                    })
+                    .unwrap_or(false);
+                let dur_ok = it
+                    .get("full_duration")
+                    .or_else(|| it.get("duration"))
+                    .and_then(|d| d.as_f64())
+                    .map(|d| {
+                        let secs = d / 1000.0;
+                        raw.duration <= 0.0 || (secs - raw.duration).abs() <= raw.duration * 0.2 + 5.0
+                    })
+                    .unwrap_or(true);
+                policy_ok && has_clear_stream && dur_ok
             };
             let chosen = col
                 .iter()
                 .filter(playable)
-                .find(|it| it.get("title").and_then(|t| t.as_str()).map(|t| t.to_lowercase().contains(&main_title)).unwrap_or(false))
-                .or_else(|| col.iter().find(playable));
+                .find(|it| it.get("title").and_then(|t| t.as_str()).map(|t| t.to_lowercase().contains(&main_title)).unwrap_or(false));
             if let Some(item) = chosen {
                 let sc_id = item.get("id").map(|i| i.to_string()).unwrap_or_default();
                 let sc_url = item.get("permalink_url").and_then(|u| u.as_str()).unwrap_or("").to_string();
