@@ -406,7 +406,7 @@ fn render_playlist_detail_view(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5), // Beautiful decorative banner
+            Constraint::Length(10), // Banner with cover
             Constraint::Length(1), // Spacer
             Constraint::Fill(1),   // Tracks
         ])
@@ -414,7 +414,7 @@ fn render_playlist_detail_view(f: &mut Frame, app: &App, area: Rect) {
 
     // Beautiful header banner
     let art_status = if let Some(ref art) = playlist.artwork_url {
-        format!("cover: {}", truncate_str(art, 40))
+        { let _ = art; "cover set".to_string() }
     } else {
         "no cover (press 'Shift+C' to set)".to_string()
     };
@@ -445,7 +445,17 @@ fn render_playlist_detail_view(f: &mut Frame, app: &App, area: Rect) {
         Line::from(Span::styled("  ╰─────────────────────────────────────────────────────────────────────────────", Style::default().fg(Color::Rgb(45, 45, 45)))),
     ];
     let banner = Paragraph::new(banner_lines);
-    f.render_widget(banner, chunks[0]);
+    if let Some(ref art) = playlist.artwork_url {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(2), Constraint::Length(20), Constraint::Length(1), Constraint::Fill(1)])
+            .split(chunks[0]);
+        render_cover(f, art, cols[1], accent);
+        let text_area = Rect { y: cols[3].y + 2, height: cols[3].height.saturating_sub(2), ..cols[3] };
+        f.render_widget(banner, text_area);
+    } else {
+        f.render_widget(banner, chunks[0]);
+    }
 
     if playlist.tracks.is_empty() {
         let empty = Paragraph::new(vec![
@@ -1147,4 +1157,87 @@ fn render_bottom_bar(f: &mut Frame, _app: &App, area: Rect) {
     ];
     let p = Paragraph::new(Line::from(hints)).alignment(Alignment::Left);
     f.render_widget(p, area);
+}
+
+// ---- Cover image rendering (half-block truecolor) ----
+type CoverPixels = Vec<Vec<(u8, u8, u8)>>;
+enum CoverState {
+    Loading,
+    Failed,
+    Ready(CoverPixels),
+}
+
+static COVER_CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, CoverState>>> =
+    std::sync::OnceLock::new();
+
+fn cover_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, CoverState>> {
+    COVER_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn load_cover(url: &str) -> Option<CoverPixels> {
+    let out = std::process::Command::new("curl")
+        .args(["-s", "-L", "-m", "10", "-A", "Mozilla/5.0", url])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let img = image::load_from_memory(&out.stdout).ok()?.to_rgb8();
+    let thumb = image::imageops::resize(&img, 48, 48, image::imageops::FilterType::Triangle);
+    let mut rows = Vec::new();
+    for y in 0..48 {
+        rows.push((0..48).map(|x| { let p = thumb.get_pixel(x, y); (p[0], p[1], p[2]) }).collect());
+    }
+    Some(rows)
+}
+
+fn render_cover(f: &mut Frame, url: &str, area: Rect, accent: Color) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let mut spawn = false;
+    let lines: Vec<Line> = {
+        let mut cache = cover_cache().lock().unwrap();
+        if !cache.contains_key(url) {
+            cache.insert(url.to_string(), CoverState::Loading);
+            spawn = true;
+        }
+        match cache.get(url) {
+            Some(CoverState::Ready(px)) => {
+                let w = area.width as usize;
+                let h = area.height as usize * 2;
+                (0..area.height as usize)
+                    .map(|row| {
+                        let spans: Vec<Span> = (0..w)
+                            .map(|col| {
+                                let sx = col * 48 / w;
+                                let top = px[(row * 2) * 48 / h][sx];
+                                let bot = px[(row * 2 + 1) * 48 / h][sx];
+                                Span::styled(
+                                    "▀",
+                                    Style::default()
+                                        .fg(Color::Rgb(top.0, top.1, top.2))
+                                        .bg(Color::Rgb(bot.0, bot.1, bot.2)),
+                                )
+                            })
+                            .collect();
+                        Line::from(spans)
+                    })
+                    .collect()
+            }
+            Some(CoverState::Failed) => vec![Line::from(Span::styled("cover failed", Style::default().fg(Color::Rgb(90, 90, 90))))],
+            _ => vec![Line::from(Span::styled("loading cover…", Style::default().fg(accent)))],
+        }
+    };
+    if spawn {
+        let u = url.to_string();
+        std::thread::spawn(move || {
+            let st = match load_cover(&u) {
+                Some(p) => CoverState::Ready(p),
+                None => CoverState::Failed,
+            };
+            cover_cache().lock().unwrap().insert(u, st);
+        });
+    }
+    f.render_widget(Paragraph::new(lines), area);
 }

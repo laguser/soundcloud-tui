@@ -1,6 +1,6 @@
 [package]
 name = "soundcloud-tui"
-version = "0.3.4"
+version = "0.3.5"
 edition = "2021"
 authors = ["laguser <laguser@users.noreply.github.com>"]
 description = "A minimalist terminal SoundCloud & YouTube player for Linux in Rust, crafted with @ttype aesthetic."
@@ -23,3 +23,4 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
 rand = "0.8"
 souvlaki = "0.8.3"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
