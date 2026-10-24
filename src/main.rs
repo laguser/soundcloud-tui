@@ -83,6 +83,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                             app.is_editing_search = false;
                         } else if app.view_mode == app::ViewMode::PlaylistDetail {
                             app.view_mode = app::ViewMode::Playlists;
+                        } else if app.view_mode == app::ViewMode::Settings && app.selected_settings_category.is_some() {
+                            app.selected_settings_category = None;
                         } else {
                             app.view_mode = app::ViewMode::Search;
                         }

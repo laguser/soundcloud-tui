@@ -13,6 +13,7 @@ pub enum RpcCommand {
     Update {
         title: String,
         artist: String,
+        activity_type: u8,
         track_url: Option<String>,
         artwork_url: Option<String>,
         start_timestamp: Option<u64>,
@@ -25,6 +26,8 @@ pub enum RpcCommand {
 struct LastSentState {
     title: String,
     artist: String,
+    activity_type: u8,
+    has_buttons: bool,
     is_paused: bool,
     start_timestamp: Option<u64>,
     end_timestamp: Option<u64>,
@@ -49,6 +52,7 @@ impl DiscordRpc {
                     RpcCommand::Update {
                         title,
                         artist,
+                        activity_type,
                         track_url,
                         artwork_url,
                         start_timestamp,
@@ -60,11 +64,15 @@ impl DiscordRpc {
                             last_state = None;
                         }
 
+                        let has_buttons = track_url.is_some();
+
                         // Avoid spamming Discord IPC every 1s (Discord rate-limits SET_ACTIVITY to 5 per 20s).
                         // Only send when track/pause state changes, user seeks (>3s drift), or 15s keepalive elapsed.
                         if let Some(ref prev) = last_state {
                             let same_track = prev.title == title
                                 && prev.artist == artist
+                                && prev.activity_type == activity_type
+                                && prev.has_buttons == has_buttons
                                 && prev.is_paused == is_paused
                                 && prev.end_timestamp.is_some() == end_timestamp.is_some();
 
@@ -92,7 +100,7 @@ impl DiscordRpc {
                                 .unwrap_or_else(|| "https://a-v2.sndcdn.com/assets/images/brand/icon/favicon-8c5e634e.ico".to_string());
 
                             let mut activity = serde_json::json!({
-                                "type": 2,
+                                "type": activity_type,
                                 "details": details_str,
                                 "state": state_str,
                                 "assets": {
@@ -142,6 +150,8 @@ impl DiscordRpc {
                                 last_state = Some(LastSentState {
                                     title,
                                     artist,
+                                    activity_type,
+                                    has_buttons,
                                     is_paused,
                                     start_timestamp,
                                     end_timestamp,
@@ -262,24 +272,27 @@ impl DiscordRpc {
         Ok((opcode, buf))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn update(
         &self,
         title: &str,
         artist: &str,
+        activity_type: u8,
         track_url: Option<String>,
         artwork_url: Option<String>,
         current_pos: f64,
         total_dur: f64,
         is_paused: bool,
+        show_timestamps: bool,
     ) {
         if let Some(ref tx) = self.tx {
             let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-            let start = if !is_paused && current_pos >= 0.0 {
+            let start = if show_timestamps && !is_paused && current_pos >= 0.0 {
                 Some(now.saturating_sub(current_pos as u64))
             } else {
                 None
             };
-            let end = if !is_paused && total_dur > 0.0 && current_pos < total_dur {
+            let end = if show_timestamps && !is_paused && total_dur > 0.0 && current_pos < total_dur {
                 let remaining = (total_dur - current_pos) as u64;
                 Some(now + remaining)
             } else {
@@ -289,6 +302,7 @@ impl DiscordRpc {
             let _ = tx.send(RpcCommand::Update {
                 title: title.to_string(),
                 artist: artist.to_string(),
+                activity_type,
                 track_url,
                 artwork_url,
                 start_timestamp: start,

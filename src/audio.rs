@@ -220,6 +220,11 @@ impl AudioPlayer {
         self.send_command(&msg);
     }
 
+    pub fn set_audio_filter(&self, filter_str: &str) {
+        let msg = format!(r#"{{"command": ["set_property", "af", "{}"]}}"#, filter_str);
+        self.send_command(&msg);
+    }
+
     pub fn set_volume(&self, vol: f64) {
         let msg = format!(r#"{{"command": ["set_property", "volume", {}]}}"#, vol);
         self.send_command(&msg);

@@ -1,6 +1,6 @@
 use crate::audio::AudioPlayer;
 use crate::search::{SearchEngine, SearchResult};
-use crate::storage::{DataStore, PitchMode, ThemeColor, TrackItem, VisualStyle};
+use crate::storage::{AudioFilter, DataStore, PitchMode, RpcActivityType, ThemeColor, TrackItem, VisualStyle};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -86,6 +86,8 @@ pub struct App {
 
     pub history_cursor: usize,
     pub favorites_cursor: usize,
+    pub settings_category_cursor: usize,
+    pub selected_settings_category: Option<usize>,
     pub settings_cursor: usize,
 
     // User Profile view
@@ -138,6 +140,15 @@ impl App {
         let player = AudioPlayer::new();
         player.set_volume(volume as f64);
         player.set_pitch_correction(store.config.pitch_mode == PitchMode::Keep);
+        if store.config.audio_filter != AudioFilter::None {
+            player.set_audio_filter(store.config.audio_filter.mpv_af());
+        }
+        let default_shuffle = store.config.default_shuffle;
+        let default_repeat = match store.config.default_repeat.as_str() {
+            "all" => RepeatMode::All,
+            "one" => RepeatMode::One,
+            _ => RepeatMode::Off,
+        };
         let discord = crate::discord::DiscordRpc::new(store.config.discord_client_id.clone());
         let mpris = crate::mpris::MprisManager::new();
         let lyrics_manager = crate::lyrics::LyricsManager::new();
@@ -163,6 +174,8 @@ impl App {
 
             history_cursor: 0,
             favorites_cursor: 0,
+            settings_category_cursor: 0,
+            selected_settings_category: None,
             settings_cursor: 0,
 
             current_user_profile: None,
@@ -190,8 +203,8 @@ impl App {
             current_speed: 1.0,
             pending_resume_pos: None,
             last_saved_pos_instant: None,
-            shuffle: false,
-            repeat: RepeatMode::Off,
+            shuffle: default_shuffle,
+            repeat: default_repeat,
             prefetched_track_id: None,
             related_fetched_for_id: None,
             pending_auto_wave_play: false,
@@ -217,6 +230,10 @@ impl App {
             ThemeColor::Dracula => Color::Rgb(189, 147, 249),
             ThemeColor::Amber => Color::Rgb(255, 176, 0),
             ThemeColor::White => Color::White,
+            ThemeColor::RosePine => Color::Rgb(235, 188, 186),
+            ThemeColor::Everforest => Color::Rgb(167, 192, 128),
+            ThemeColor::Kanagawa => Color::Rgb(126, 156, 216),
+            ThemeColor::BloodRed => Color::Rgb(255, 85, 85),
         }
     }
 
@@ -273,17 +290,21 @@ impl App {
         }
 
         // Update MPRIS2 for Caelestia Shell and system media keys immediately
-        self.mpris.update(
-            &track.title,
-            &track.artist,
-            track.artwork_url.as_deref(),
-            track.duration,
-            false,
-        );
+        if self.store.config.mpris_enabled {
+            self.mpris.update(
+                &track.title,
+                &track.artist,
+                track.artwork_url.as_deref(),
+                track.duration,
+                false,
+            );
+        }
 
         // Request lyrics
         self.current_lyrics = None;
-        self.lyrics_manager.request_lyrics(&track.id, &track.title, &track.artist);
+        if self.store.config.auto_lyrics {
+            self.lyrics_manager.request_lyrics(&track.id, &track.title, &track.artist);
+        }
 
         // Fetch waveform if available
         self.fetch_waveform_for_track(&track);
@@ -422,7 +443,12 @@ impl App {
                 }
             }
             ViewMode::Settings => {
-                self.cycle_setting();
+                if self.selected_settings_category.is_none() {
+                    self.selected_settings_category = Some(self.settings_category_cursor);
+                    self.settings_cursor = 0;
+                } else {
+                    self.cycle_setting();
+                }
             }
             ViewMode::Lyrics => {
                 self.toggle_pause();
@@ -542,20 +568,18 @@ impl App {
     }
 
     pub fn speed_down(&mut self) {
-        // If normal 1.0x, drop straight to 0.85x as requested; otherwise step down by 0.05
         if (self.current_speed - 1.0).abs() < 0.01 {
-            self.set_speed(0.85);
+            self.set_speed(self.store.config.slowed_preset);
         } else {
-            self.set_speed(self.current_speed - 0.05);
+            self.set_speed(self.current_speed - self.store.config.speed_step);
         }
     }
 
     pub fn speed_up(&mut self) {
-        // If normal 1.0x, jump straight to 1.25x as requested; otherwise step up by 0.05
         if (self.current_speed - 1.0).abs() < 0.01 {
-            self.set_speed(1.25);
+            self.set_speed(self.store.config.speedup_preset);
         } else {
-            self.set_speed(self.current_speed + 0.05);
+            self.set_speed(self.current_speed + self.store.config.speed_step);
         }
     }
 
@@ -823,6 +847,8 @@ impl App {
                         self.query_chars.remove(self.input_cursor);
                     }
                     self.set_status("Search mode (type query and press Enter)");
+                } else if self.view_mode == ViewMode::Settings && self.selected_settings_category.is_some() {
+                    self.selected_settings_category = None;
                 } else {
                     self.reset_speed();
                 }
@@ -1021,7 +1047,11 @@ impl App {
                     }
                 }
                 ViewMode::Settings => {
-                    if self.settings_cursor > 0 {
+                    if self.selected_settings_category.is_none() {
+                        if self.settings_category_cursor > 0 {
+                            self.settings_category_cursor -= 1;
+                        }
+                    } else if self.settings_cursor > 0 {
                         self.settings_cursor -= 1;
                     }
                 }
@@ -1080,8 +1110,13 @@ impl App {
                     }
                 }
                 ViewMode::Settings => {
-                    if self.settings_cursor < 11 {
-                        self.settings_cursor += 1;
+                    if let Some(cat) = self.selected_settings_category {
+                        let max_items = Self::settings_category_len(cat);
+                        if self.settings_cursor + 1 < max_items {
+                            self.settings_cursor += 1;
+                        }
+                    } else if self.settings_category_cursor + 1 < 5 {
+                        self.settings_category_cursor += 1;
                     }
                 }
                 ViewMode::Lyrics => {
@@ -1152,60 +1187,115 @@ impl App {
             }
             KeyCode::Left | KeyCode::Char('b') => {
                 if self.view_mode == ViewMode::Settings {
-                    self.cycle_setting();
+                    if self.selected_settings_category.is_some() {
+                        self.cycle_setting();
+                    }
                 } else {
                     self.seek(-(self.store.config.seek_step as f64));
                 }
             }
             KeyCode::Right | KeyCode::Char('f') => {
                 if self.view_mode == ViewMode::Settings {
-                    self.cycle_setting();
+                    if self.selected_settings_category.is_none() {
+                        self.selected_settings_category = Some(self.settings_category_cursor);
+                        self.settings_cursor = 0;
+                    } else {
+                        self.cycle_setting();
+                    }
                 } else {
                     self.seek(self.store.config.seek_step as f64);
                 }
             }
             KeyCode::Char('+') | KeyCode::Char('=') => {
-                self.adjust_volume(5);
+                self.adjust_volume(self.store.config.volume_step as i32);
             }
             KeyCode::Char('-') => {
-                self.adjust_volume(-5);
+                self.adjust_volume(-(self.store.config.volume_step as i32));
             }
             _ => {}
         }
     }
 
+    pub fn settings_category_len(cat: usize) -> usize {
+        match cat {
+            0 => 7, // Appearance & UI
+            1 => 6, // Audio & Speed Engine
+            2 => 6, // Playback & Radio
+            3 => 6, // Discord RPC & System
+            4 => 4, // Storage & Maintenance
+            _ => 0,
+        }
+    }
+
     fn cycle_setting(&mut self) {
-        match self.settings_cursor {
-            0 => {
+        let Some(cat) = self.selected_settings_category else {
+            return;
+        };
+        match (cat, self.settings_cursor) {
+            // 1. Appearance & UI
+            (0, 0) => {
                 self.store.config.theme = match self.store.config.theme {
                     ThemeColor::Auto => ThemeColor::Catppuccin,
                     ThemeColor::Catppuccin => ThemeColor::TokyoNight,
                     ThemeColor::TokyoNight => ThemeColor::Nord,
                     ThemeColor::Nord => ThemeColor::Gruvbox,
                     ThemeColor::Gruvbox => ThemeColor::Dracula,
-                    ThemeColor::Dracula => ThemeColor::Amber,
-                    ThemeColor::Amber => ThemeColor::White,
+                    ThemeColor::Dracula => ThemeColor::RosePine,
+                    ThemeColor::RosePine => ThemeColor::Everforest,
+                    ThemeColor::Everforest => ThemeColor::Kanagawa,
+                    ThemeColor::Kanagawa => ThemeColor::Amber,
+                    ThemeColor::Amber => ThemeColor::BloodRed,
+                    ThemeColor::BloodRed => ThemeColor::White,
                     ThemeColor::White => ThemeColor::Auto,
                 };
             }
-            1 => {
+            (0, 1) => {
                 self.store.config.visual = match self.store.config.visual {
                     VisualStyle::Waveform => VisualStyle::Tape,
                     VisualStyle::Tape => VisualStyle::Blocky,
                     VisualStyle::Blocky => VisualStyle::Braille,
-                    VisualStyle::Braille => VisualStyle::Minimal,
+                    VisualStyle::Braille => VisualStyle::Neon,
+                    VisualStyle::Neon => VisualStyle::Minimal,
                     VisualStyle::Minimal => VisualStyle::Waveform,
                 };
             }
-            2 => {
+            (0, 2) => {
+                self.store.config.progress_bar_width = match self.store.config.progress_bar_width {
+                    30 => 45,
+                    45 => 60,
+                    60 => 75,
+                    75 => 95,
+                    _ => 30,
+                };
+            }
+            (0, 3) => {
                 self.store.config.show_bottom_hints = !self.store.config.show_bottom_hints;
             }
-            3 => {
-                self.volume = if self.volume >= 120 { 20 } else { self.volume + 10 };
+            (0, 4) => {
+                self.store.config.show_top_status = !self.store.config.show_top_status;
+            }
+            (0, 5) => {
+                self.store.config.show_durations = !self.store.config.show_durations;
+            }
+            (0, 6) => {
+                self.store.config.show_hearts = !self.store.config.show_hearts;
+            }
+
+            // 2. Audio & Speed Engine
+            (1, 0) => {
+                self.volume = if self.volume >= 130 { 20 } else { self.volume + 10 };
                 self.store.config.default_volume = self.volume;
                 self.player.set_volume(self.volume as f64);
             }
-            4 => {
+            (1, 1) => {
+                self.store.config.volume_step = match self.store.config.volume_step {
+                    2 => 5,
+                    5 => 10,
+                    10 => 15,
+                    _ => 2,
+                };
+            }
+            (1, 2) => {
                 self.store.config.pitch_mode = match self.store.config.pitch_mode {
                     PitchMode::Natural => PitchMode::Keep,
                     PitchMode::Keep => PitchMode::Natural,
@@ -1213,13 +1303,47 @@ impl App {
                 self.player
                     .set_pitch_correction(self.store.config.pitch_mode == PitchMode::Keep);
             }
-            5 => {
+            (1, 3) => {
+                self.store.config.slowed_preset = if (self.store.config.slowed_preset - 0.75).abs() < 0.01 {
+                    0.80
+                } else if (self.store.config.slowed_preset - 0.80).abs() < 0.01 {
+                    0.85
+                } else if (self.store.config.slowed_preset - 0.85).abs() < 0.01 {
+                    0.90
+                } else {
+                    0.75
+                };
+            }
+            (1, 4) => {
+                self.store.config.speedup_preset = if (self.store.config.speedup_preset - 1.15).abs() < 0.01 {
+                    1.20
+                } else if (self.store.config.speedup_preset - 1.20).abs() < 0.01 {
+                    1.25
+                } else if (self.store.config.speedup_preset - 1.25).abs() < 0.01 {
+                    1.35
+                } else {
+                    1.15
+                };
+            }
+            (1, 5) => {
+                self.store.config.audio_filter = match self.store.config.audio_filter {
+                    AudioFilter::None => AudioFilter::BassBoost,
+                    AudioFilter::BassBoost => AudioFilter::NightcoreEq,
+                    AudioFilter::NightcoreEq => AudioFilter::VaporwaveReverb,
+                    AudioFilter::VaporwaveReverb => AudioFilter::SoftCompressor,
+                    AudioFilter::SoftCompressor => AudioFilter::None,
+                };
+                self.player.set_audio_filter(self.store.config.audio_filter.mpv_af());
+            }
+
+            // 3. Playback & Radio
+            (2, 0) => {
                 self.store.config.auto_wave = !self.store.config.auto_wave;
             }
-            6 => {
+            (2, 1) => {
                 self.store.config.resume_playback = !self.store.config.resume_playback;
             }
-            7 => {
+            (2, 2) => {
                 self.store.config.seek_step = match self.store.config.seek_step {
                     2 => 5,
                     5 => 10,
@@ -1228,7 +1352,28 @@ impl App {
                     _ => 2,
                 };
             }
-            8 => {
+            (2, 3) => {
+                self.store.config.default_shuffle = !self.store.config.default_shuffle;
+                self.shuffle = self.store.config.default_shuffle;
+            }
+            (2, 4) => {
+                self.store.config.default_repeat = match self.store.config.default_repeat.as_str() {
+                    "off" => "all".to_string(),
+                    "all" => "one".to_string(),
+                    _ => "off".to_string(),
+                };
+                self.repeat = match self.store.config.default_repeat.as_str() {
+                    "all" => RepeatMode::All,
+                    "one" => RepeatMode::One,
+                    _ => RepeatMode::Off,
+                };
+            }
+            (2, 5) => {
+                self.store.config.mouse_support = !self.store.config.mouse_support;
+            }
+
+            // 4. Discord RPC & System
+            (3, 0) => {
                 self.store.config.discord_rpc = !self.store.config.discord_rpc;
                 if !self.store.config.discord_rpc {
                     self.discord.clear();
@@ -1236,16 +1381,49 @@ impl App {
                     self.last_rpc_update = None;
                 }
             }
-            9 => {
+            (3, 1) => {
+                self.store.config.rpc_activity_type = match self.store.config.rpc_activity_type {
+                    RpcActivityType::Listening => RpcActivityType::Playing,
+                    RpcActivityType::Playing => RpcActivityType::Listening,
+                };
+                self.last_rpc_update = None;
+            }
+            (3, 2) => {
                 self.store.config.discord_buttons = !self.store.config.discord_buttons;
                 self.last_rpc_update = None;
             }
-            10 => {
+            (3, 3) => {
+                self.store.config.discord_timestamps = !self.store.config.discord_timestamps;
+                self.last_rpc_update = None;
+            }
+            (3, 4) => {
+                self.store.config.mpris_enabled = !self.store.config.mpris_enabled;
+            }
+            (3, 5) => {
+                self.store.config.auto_lyrics = !self.store.config.auto_lyrics;
+            }
+
+            // 5. Storage & Maintenance
+            (4, 0) => {
                 self.store.config.gapless_prefetch = !self.store.config.gapless_prefetch;
             }
-            11 => {
+            (4, 1) => {
+                self.store.config.history_limit = match self.store.config.history_limit {
+                    50 => 100,
+                    100 => 200,
+                    200 => 500,
+                    500 => 1000,
+                    _ => 50,
+                };
+            }
+            (4, 2) => {
                 let count = DataStore::clear_audio_cache();
                 self.set_status(&format!("Cleared {} files from local audio cache", count));
+            }
+            (4, 3) => {
+                self.store.history.clear();
+                self.history_cursor = 0;
+                self.set_status("Cleared listening history");
             }
             _ => {}
         }
@@ -1397,11 +1575,13 @@ impl App {
                     self.discord.update(
                         &track.title,
                         &track.artist,
+                        self.store.config.rpc_activity_type.code(),
                         btn_url,
                         track.artwork_url.clone(),
                         self.current_pos,
                         self.total_duration,
                         self.is_paused,
+                        self.store.config.discord_timestamps,
                     );
                 } else {
                     self.discord.clear();
@@ -1589,7 +1769,7 @@ impl App {
     }
 
     pub fn handle_mouse(&mut self, mouse: MouseEvent, area: Rect) {
-        if area.width < 30 || area.height < 8 {
+        if !self.store.config.mouse_support || area.width < 30 || area.height < 8 {
             return;
         }
         if self.modal_input.is_some() || self.modal_target_track.is_some() {
@@ -1631,7 +1811,8 @@ impl App {
                 // Player tape line 2 (waveform progress bar): seek to clicked position
                 if row == area.height.saturating_sub(2) {
                     if self.total_duration > 0.0 {
-                        let bar_width = width.saturating_sub(24).clamp(12, 70);
+                        let max_bar = self.store.config.progress_bar_width.clamp(20, 120);
+                        let bar_width = width.saturating_sub(24).clamp(12, max_bar);
                         let total_line_width = bar_width + 12;
                         let start_x = width.saturating_sub(total_line_width) / 2;
                         let bar_start_x = start_x + 6;
@@ -1781,7 +1962,24 @@ impl App {
                         }
                     }
                     ViewMode::Settings => {
-                        self.cycle_setting();
+                        if let Some(cat) = self.selected_settings_category {
+                            if row <= 3 {
+                                self.selected_settings_category = None;
+                                return;
+                            }
+                            let clicked_idx = (row - 4) as usize;
+                            if clicked_idx < Self::settings_category_len(cat) {
+                                self.settings_cursor = clicked_idx;
+                                self.cycle_setting();
+                            }
+                        } else if row >= 4 {
+                            let clicked_idx = (row - 4) as usize;
+                            if clicked_idx < 5 {
+                                self.settings_category_cursor = clicked_idx;
+                                self.selected_settings_category = Some(clicked_idx);
+                                self.settings_cursor = 0;
+                            }
+                        }
                     }
                     ViewMode::Lyrics => {
                         self.toggle_pause();

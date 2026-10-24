@@ -27,7 +27,9 @@ pub fn render(f: &mut Frame, app: &App) {
         ])
         .split(size);
 
-    render_top_bar(f, app, chunks[0]);
+    if app.store.config.show_top_status {
+        render_top_bar(f, app, chunks[0]);
+    }
 
     match app.view_mode {
         ViewMode::Search => render_search_view(f, app, chunks[2]),
@@ -237,6 +239,7 @@ fn render_tracks_list(
                 VisualStyle::Blocky => "▊ ",
                 VisualStyle::Minimal => "· ",
                 VisualStyle::Braille => "⣿ ",
+                VisualStyle::Neon => "◈ ",
                 VisualStyle::Tape => "▸ ",
                 VisualStyle::Waveform => "› ",
             }
@@ -246,7 +249,13 @@ fn render_tracks_list(
             "  "
         };
 
-        let like_icon = if is_liked { "♥ " } else { "  " };
+        let like_icon = if !app.store.config.show_hearts {
+            "  "
+        } else if is_liked {
+            "♥ "
+        } else {
+            "  "
+        };
 
         let title_style = if is_selected {
             Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
@@ -262,7 +271,7 @@ fn render_tracks_list(
             Style::default().fg(Color::Rgb(70, 70, 70))
         };
 
-        let dur = if track.duration > 0.0 {
+        let dur = if app.store.config.show_durations && track.duration > 0.0 {
             format_duration(track.duration)
         } else {
             "".to_string()
@@ -419,90 +428,239 @@ fn render_history_view(f: &mut Frame, app: &App, area: Rect) {
 
 fn render_settings_view(f: &mut Frame, app: &App, area: Rect) {
     let accent = app.theme_accent();
-    let max_lines = area.height as usize;
-    if max_lines == 0 {
+    if area.height == 0 {
         return;
     }
 
-    let cache_info = crate::storage::DataStore::cache_size_label();
-    let rows: Vec<Option<(&str, usize, &str, String)>> = vec![
-        None,
-        Some(("APPEARANCE", 0, "", String::new())),
-        Some(("", 0, "color theme", app.store.config.theme.name().to_string())),
-        Some(("", 1, "player style", app.store.config.visual.name().to_string())),
-        Some(("", 2, "bottom hints bar", if app.store.config.show_bottom_hints { "visible".to_string() } else { "hidden".to_string() })),
-        None,
-        Some(("AUDIO & PLAYBACK", 0, "", String::new())),
-        Some(("", 3, "default volume", format!("{}%", app.store.config.default_volume))),
-        Some(("", 4, "speed pitch mode", app.store.config.pitch_mode.name().to_string())),
-        Some(("", 5, "auto-wave radio", if app.store.config.auto_wave { "enabled (infinite queue)".to_string() } else { "disabled".to_string() })),
-        Some(("", 6, "resume position", if app.store.config.resume_playback { "remember track pos & speed".to_string() } else { "always start at 0:00".to_string() })),
-        Some(("", 7, "seek step (←/→)", format!("{} sec", app.store.config.seek_step))),
-        None,
-        Some(("INTEGRATIONS", 0, "", String::new())),
-        Some(("", 8, "discord rich presence", if app.store.config.discord_rpc { "on".to_string() } else { "off".to_string() })),
-        Some(("", 9, "discord button link", if app.store.config.discord_buttons { "on (visible to others)".to_string() } else { "off (visible to self & others)".to_string() })),
-        None,
-        Some(("STORAGE & CACHE", 0, "", String::new())),
-        Some(("", 10, "gapless disk prefetch", if app.store.config.gapless_prefetch { "enabled (at 70%)".to_string() } else { "disabled".to_string() })),
-        Some(("", 11, "clear audio cache", cache_info)),
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Header
+            Constraint::Length(1), // Blank separator
+            Constraint::Fill(1),   // List
+        ])
+        .split(area);
+
+    let categories = [
+        ("1. Appearance & UI", "theme · player style · bar width · top/bottom bars · icons", 7usize),
+        ("2. Audio & Speed Engine", "volume · pitch mode · slowed/sped-up presets · DSP filter", 6usize),
+        ("3. Playback & Radio", "auto-wave · resume pos · seek step · shuffle · repeat · mouse", 6usize),
+        ("4. Discord RPC & System", "rich presence · activity type · button · timestamps · MPRIS", 6usize),
+        ("5. Storage & Maintenance", "gapless disk prefetch · history limit · clear cache/history", 4usize),
     ];
 
-    let mut rendered_lines = Vec::new();
-    let mut selected_line_idx = 0usize;
+    let Some(cat_idx) = app.selected_settings_category else {
+        // Render top-level categories list (just like Playlists view)
+        let header = Paragraph::new(Line::from(vec![
+            Span::styled("  ⚙  ", Style::default().fg(accent)),
+            Span::styled("settings categories", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled("  (enter / → to open · config: ~/.config/sctui/config.json)", Style::default().fg(Color::Rgb(70, 70, 70))),
+        ]));
+        f.render_widget(header, chunks[0]);
 
-    for row in rows {
-        match row {
-            None => {
-                rendered_lines.push(Line::from(""));
-            }
-            Some((cat, _, "", _)) if !cat.is_empty() => {
-                rendered_lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("  ── {} ", cat),
-                        Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        "─".repeat(38usize.saturating_sub(cat.len())),
-                        Style::default().fg(Color::Rgb(45, 45, 45)),
-                    ),
-                ]));
-            }
-            Some((_, idx, label, val)) => {
-                let is_selected = idx == app.settings_cursor;
-                if is_selected {
-                    selected_line_idx = rendered_lines.len();
-                }
-                let prefix = if is_selected { "  ▸ " } else { "    " };
-                let style_label = if is_selected {
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::Rgb(130, 130, 130))
-                };
-                let style_val = if is_selected {
-                    Style::default().fg(accent).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::Rgb(95, 95, 95))
-                };
+        let mut lines = Vec::new();
+        for (idx, (title, desc, count)) in categories.iter().enumerate() {
+            let is_selected = idx == app.settings_category_cursor;
+            let prefix = if is_selected { " → " } else { "   " };
+            let title_style = if is_selected {
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Rgb(150, 150, 150))
+            };
+            let desc_style = if is_selected {
+                Style::default().fg(accent)
+            } else {
+                Style::default().fg(Color::Rgb(80, 80, 80))
+            };
 
-                rendered_lines.push(Line::from(vec![
-                    Span::styled(prefix, Style::default().fg(if is_selected { accent } else { Color::Rgb(50, 50, 50) })),
-                    Span::styled(format!("{:<24}", label), style_label),
-                    Span::styled(format!("‹ {} ›", val), style_val),
-                ]));
-            }
+            lines.push(Line::from(vec![
+                Span::styled(prefix, Style::default().fg(if is_selected { accent } else { Color::Rgb(60, 60, 60) })),
+                Span::styled("≡ ", Style::default().fg(accent)),
+                Span::styled(format!("{:<26}", title), title_style),
+                Span::styled(format!(" {:<58}", desc), desc_style),
+                Span::styled(format!("{:>2} options", count), Style::default().fg(Color::Rgb(65, 65, 65))),
+            ]));
         }
-    }
 
-    let scroll_offset = if selected_line_idx >= max_lines {
-        selected_line_idx - max_lines + 2
-    } else {
-        0
+        let p = Paragraph::new(lines);
+        f.render_widget(p, chunks[2]);
+        return;
     };
 
-    let visible: Vec<Line> = rendered_lines.into_iter().skip(scroll_offset).take(max_lines).collect();
-    let p = Paragraph::new(visible).alignment(Alignment::Center);
-    f.render_widget(p, area);
+    // Inside a specific category
+    let (cat_title, _, _) = categories.get(cat_idx).copied().unwrap_or(("Settings", "", 0));
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled("  ⚙  ", Style::default().fg(accent)),
+        Span::styled(cat_title, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled("  (enter / ← → to change · esc / backspace to back)", Style::default().fg(Color::Rgb(70, 70, 70))),
+    ]));
+    f.render_widget(header, chunks[0]);
+
+    let items: Vec<(&str, String)> = match cat_idx {
+        0 => vec![
+            ("color theme", app.store.config.theme.name().to_string()),
+            ("player style", app.store.config.visual.name().to_string()),
+            ("progress bar width", format!("{} cols", app.store.config.progress_bar_width)),
+            (
+                "bottom hints bar",
+                if app.store.config.show_bottom_hints {
+                    "visible".to_string()
+                } else {
+                    "hidden".to_string()
+                },
+            ),
+            (
+                "top status bar",
+                if app.store.config.show_top_status {
+                    "visible".to_string()
+                } else {
+                    "hidden".to_string()
+                },
+            ),
+            (
+                "track durations",
+                if app.store.config.show_durations {
+                    "shown".to_string()
+                } else {
+                    "hidden".to_string()
+                },
+            ),
+            (
+                "favorite heart icons",
+                if app.store.config.show_hearts {
+                    "shown (♥)".to_string()
+                } else {
+                    "hidden".to_string()
+                },
+            ),
+        ],
+        1 => vec![
+            ("default volume", format!("{}%", app.store.config.default_volume)),
+            ("volume step (+/-)", format!("{}%", app.store.config.volume_step)),
+            ("speed pitch mode", app.store.config.pitch_mode.name().to_string()),
+            ("slowed preset (< / [)", format!("{:.2}x", app.store.config.slowed_preset)),
+            ("sped up preset (> / ])", format!("{:.2}x", app.store.config.speedup_preset)),
+            ("audio DSP filter (EQ)", app.store.config.audio_filter.name().to_string()),
+        ],
+        2 => vec![
+            (
+                "auto-wave radio",
+                if app.store.config.auto_wave {
+                    "enabled (infinite related tracks)".to_string()
+                } else {
+                    "disabled".to_string()
+                },
+            ),
+            (
+                "resume position & speed",
+                if app.store.config.resume_playback {
+                    "remember per track".to_string()
+                } else {
+                    "always start at 0:00".to_string()
+                },
+            ),
+            ("seek step (←/→)", format!("{} sec", app.store.config.seek_step)),
+            (
+                "default shuffle on start",
+                if app.store.config.default_shuffle {
+                    "on".to_string()
+                } else {
+                    "off".to_string()
+                },
+            ),
+            ("default repeat mode", app.store.config.default_repeat.clone()),
+            (
+                "terminal mouse support",
+                if app.store.config.mouse_support {
+                    "enabled (click to play/seek)".to_string()
+                } else {
+                    "disabled (keyboard only)".to_string()
+                },
+            ),
+        ],
+        3 => vec![
+            (
+                "discord rich presence",
+                if app.store.config.discord_rpc {
+                    "on".to_string()
+                } else {
+                    "off".to_string()
+                },
+            ),
+            ("discord activity type", app.store.config.rpc_activity_type.name().to_string()),
+            (
+                "discord button link",
+                if app.store.config.discord_buttons {
+                    "on (visible to others)".to_string()
+                } else {
+                    "off (visible to self & others)".to_string()
+                },
+            ),
+            (
+                "discord elapsed timer",
+                if app.store.config.discord_timestamps {
+                    "shown".to_string()
+                } else {
+                    "hidden".to_string()
+                },
+            ),
+            (
+                "system media keys (MPRIS2)",
+                if app.store.config.mpris_enabled {
+                    "enabled".to_string()
+                } else {
+                    "disabled".to_string()
+                },
+            ),
+            (
+                "auto-fetch synced lyrics",
+                if app.store.config.auto_lyrics {
+                    "enabled (LRCLIB)".to_string()
+                } else {
+                    "disabled".to_string()
+                },
+            ),
+        ],
+        4 => vec![
+            (
+                "gapless disk prefetch",
+                if app.store.config.gapless_prefetch {
+                    "enabled (at 70% track pos)".to_string()
+                } else {
+                    "disabled".to_string()
+                },
+            ),
+            ("max history entries", format!("{} tracks", app.store.config.history_limit)),
+            ("clear audio cache", crate::storage::DataStore::cache_size_label()),
+            ("clear listening history", format!("{} tracks saved", app.store.history.len())),
+        ],
+        _ => Vec::new(),
+    };
+
+    let mut lines = Vec::new();
+    for (idx, (label, val)) in items.iter().enumerate() {
+        let is_selected = idx == app.settings_cursor;
+        let prefix = if is_selected { " → " } else { "   " };
+        let style_label = if is_selected {
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Rgb(140, 140, 140))
+        };
+        let style_val = if is_selected {
+            Style::default().fg(accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Rgb(95, 95, 95))
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(prefix, Style::default().fg(if is_selected { accent } else { Color::Rgb(60, 60, 60) })),
+            Span::styled(format!("{:<28}", label), style_label),
+            Span::styled(format!("‹ {} ›", val), style_val),
+        ]));
+    }
+
+    let p = Paragraph::new(lines);
+    f.render_widget(p, chunks[2]);
 }
 
 fn render_player_tape(f: &mut Frame, app: &App, area: Rect) {
@@ -539,7 +697,8 @@ fn render_player_tape(f: &mut Frame, app: &App, area: Rect) {
     };
 
     // Dynamic waveform / visual style tape rendering
-    let bar_width = width.saturating_sub(24).clamp(12, 70);
+    let max_bar = app.store.config.progress_bar_width.clamp(20, 120);
+    let bar_width = width.saturating_sub(24).clamp(12, max_bar);
     let filled_len = (bar_width as f64 * progress_ratio) as usize;
 
     let mut tape_spans = Vec::new();
@@ -622,6 +781,18 @@ fn render_player_tape(f: &mut Frame, app: &App, area: Rect) {
                     ('◆', Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
                 } else {
                     ('·', Style::default().fg(Color::Rgb(45, 45, 45)))
+                };
+                tape_spans.push(Span::styled(ch.to_string(), style));
+            }
+        }
+        VisualStyle::Neon => {
+            for i in 0..bar_width {
+                let (ch, style) = if i < filled_len {
+                    ('═', Style::default().fg(accent).add_modifier(Modifier::BOLD))
+                } else if i == filled_len {
+                    ('◈', Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+                } else {
+                    ('─', Style::default().fg(Color::Rgb(45, 45, 45)))
                 };
                 tape_spans.push(Span::styled(ch.to_string(), style));
             }

@@ -13,6 +13,10 @@ pub enum ThemeColor {
     Dracula,    // Purple (#bd93f9)
     Amber,      // Vintage Amber (#ffb000)
     White,      // Pure Monochrome
+    RosePine,   // Rose Pine (#ebbcba)
+    Everforest, // Everforest Green (#a7c080)
+    Kanagawa,   // Kanagawa Wave (#7e9cd8)
+    BloodRed,   // Crimson (#ff5555)
 }
 
 impl ThemeColor {
@@ -26,6 +30,10 @@ impl ThemeColor {
             ThemeColor::Dracula => "dracula",
             ThemeColor::Amber => "amber",
             ThemeColor::White => "white",
+            ThemeColor::RosePine => "rosé pine",
+            ThemeColor::Everforest => "everforest",
+            ThemeColor::Kanagawa => "kanagawa",
+            ThemeColor::BloodRed => "crimson red",
         }
     }
 }
@@ -37,6 +45,7 @@ pub enum VisualStyle {
     Minimal,  // Transparent airy layout (··◆  )
     Blocky,   // Solid blocky cursor and indicators (██▓░░)
     Braille,  // High-resolution braille spectrum (⣀⣤⣶⣿)
+    Neon,     // Thin neon line (══◈══)
 }
 
 impl VisualStyle {
@@ -47,6 +56,7 @@ impl VisualStyle {
             VisualStyle::Minimal => "minimal (··◆)",
             VisualStyle::Blocky => "blocky (██▓░░)",
             VisualStyle::Braille => "braille (⣀⣤⣶⣿)",
+            VisualStyle::Neon => "neon (══◈──)",
         }
     }
 }
@@ -68,6 +78,71 @@ impl PitchMode {
         match self {
             PitchMode::Natural => "natural (slowed / nightcore)",
             PitchMode::Keep => "keep pitch (time-stretch)",
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub enum AudioFilter {
+    None,
+    BassBoost,
+    NightcoreEq,
+    VaporwaveReverb,
+    SoftCompressor,
+}
+
+impl Default for AudioFilter {
+    fn default() -> Self {
+        AudioFilter::None
+    }
+}
+
+impl AudioFilter {
+    pub fn name(&self) -> &'static str {
+        match self {
+            AudioFilter::None => "off (flat)",
+            AudioFilter::BassBoost => "bass boost (+6dB sub)",
+            AudioFilter::NightcoreEq => "bright (treble boost)",
+            AudioFilter::VaporwaveReverb => "muffled lo-fi (lowpass)",
+            AudioFilter::SoftCompressor => "dynamic normalizer",
+        }
+    }
+
+    pub fn mpv_af(&self) -> &'static str {
+        match self {
+            AudioFilter::None => "",
+            AudioFilter::BassBoost => "lavfi=[bass=g=6:f=110:w=0.6]",
+            AudioFilter::NightcoreEq => "lavfi=[treble=g=5:f=3500]",
+            AudioFilter::VaporwaveReverb => "lavfi=[lowpass=f=3200]",
+            AudioFilter::SoftCompressor => "lavfi=[dynaudnorm=f=150:g=15]",
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub enum RpcActivityType {
+    Listening, // type 2 ("Listening to SoundCloud")
+    Playing,   // type 0 ("Playing SoundCloud")
+}
+
+impl Default for RpcActivityType {
+    fn default() -> Self {
+        RpcActivityType::Listening
+    }
+}
+
+impl RpcActivityType {
+    pub fn name(&self) -> &'static str {
+        match self {
+            RpcActivityType::Listening => "listening to SoundCloud",
+            RpcActivityType::Playing => "playing SoundCloud",
+        }
+    }
+
+    pub fn code(&self) -> u8 {
+        match self {
+            RpcActivityType::Listening => 2,
+            RpcActivityType::Playing => 0,
         }
     }
 }
@@ -113,20 +188,61 @@ pub struct Config {
     pub visual: VisualStyle,
     #[serde(default = "default_true")]
     pub show_bottom_hints: bool,
+    #[serde(default = "default_true")]
+    pub show_top_status: bool,
+    #[serde(default = "default_true")]
+    pub show_durations: bool,
+    #[serde(default = "default_true")]
+    pub show_hearts: bool,
+    #[serde(default = "default_bar_width")]
+    pub progress_bar_width: usize,
+    #[serde(default = "default_true")]
+    pub mouse_support: bool,
+
     pub default_volume: u32,
+    #[serde(default = "default_volume_step")]
+    pub volume_step: u32,
     #[serde(default)]
     pub pitch_mode: PitchMode,
+    #[serde(default = "default_slowed_preset")]
+    pub slowed_preset: f64,
+    #[serde(default = "default_speedup_preset")]
+    pub speedup_preset: f64,
+    #[serde(default = "default_speed_step")]
+    pub speed_step: f64,
+    #[serde(default)]
+    pub audio_filter: AudioFilter,
+
     #[serde(default = "default_true")]
     pub auto_wave: bool,
     #[serde(default = "default_true")]
     pub resume_playback: bool,
-    #[serde(default = "default_true")]
-    pub gapless_prefetch: bool,
     #[serde(default = "default_seek_step")]
     pub seek_step: u32,
+    #[serde(default)]
+    pub default_shuffle: bool,
+    #[serde(default = "default_repeat_str")]
+    pub default_repeat: String,
+    #[serde(default = "default_search_limit")]
+    pub search_limit: usize,
+
     pub discord_rpc: bool,
     #[serde(default)]
+    pub rpc_activity_type: RpcActivityType,
+    #[serde(default)]
     pub discord_buttons: bool,
+    #[serde(default = "default_true")]
+    pub discord_timestamps: bool,
+    #[serde(default = "default_true")]
+    pub mpris_enabled: bool,
+    #[serde(default = "default_true")]
+    pub auto_lyrics: bool,
+
+    #[serde(default = "default_true")]
+    pub gapless_prefetch: bool,
+    #[serde(default = "default_history_limit")]
+    pub history_limit: usize,
+
     pub discord_client_id: Option<String>,
     pub client_id: Option<String>,
     pub oauth_token: Option<String>,
@@ -142,20 +258,70 @@ fn default_seek_step() -> u32 {
     5
 }
 
+fn default_volume_step() -> u32 {
+    5
+}
+
+fn default_bar_width() -> usize {
+    60
+}
+
+fn default_slowed_preset() -> f64 {
+    0.85
+}
+
+fn default_speedup_preset() -> f64 {
+    1.25
+}
+
+fn default_speed_step() -> f64 {
+    0.05
+}
+
+fn default_repeat_str() -> String {
+    "off".to_string()
+}
+
+fn default_search_limit() -> usize {
+    30
+}
+
+fn default_history_limit() -> usize {
+    200
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             theme: ThemeColor::Auto,
             visual: VisualStyle::Waveform,
             show_bottom_hints: true,
+            show_top_status: true,
+            show_durations: true,
+            show_hearts: true,
+            progress_bar_width: 60,
+            mouse_support: true,
             default_volume: 80,
+            volume_step: 5,
             pitch_mode: PitchMode::Natural,
+            slowed_preset: 0.85,
+            speedup_preset: 1.25,
+            speed_step: 0.05,
+            audio_filter: AudioFilter::None,
             auto_wave: true,
             resume_playback: true,
-            gapless_prefetch: true,
             seek_step: 5,
+            default_shuffle: false,
+            default_repeat: "off".to_string(),
+            search_limit: 30,
             discord_rpc: true,
+            rpc_activity_type: RpcActivityType::Listening,
             discord_buttons: false,
+            discord_timestamps: true,
+            mpris_enabled: true,
+            auto_lyrics: true,
+            gapless_prefetch: true,
+            history_limit: 200,
             discord_client_id: None,
             client_id: None,
             oauth_token: None,
@@ -223,17 +389,21 @@ impl DataStore {
     pub fn load() -> Self {
         let path = Self::config_path();
         if let Ok(content) = fs::read_to_string(&path) {
-            if let Ok(data) = serde_json::from_str(&content) {
+            if let Ok(data) = serde_json::from_str::<Self>(&content) {
+                data.save();
                 return data;
             }
         }
         let bak_path = path.with_extension("json.bak");
         if let Ok(content) = fs::read_to_string(&bak_path) {
-            if let Ok(data) = serde_json::from_str(&content) {
+            if let Ok(data) = serde_json::from_str::<Self>(&content) {
+                data.save();
                 return data;
             }
         }
-        Self::default()
+        let default_store = Self::default();
+        default_store.save();
+        default_store
     }
 
     pub fn save(&self) {
@@ -250,9 +420,20 @@ impl DataStore {
                     let _ = fs::copy(&path, bak);
                 }
                 let tmp = path.with_extension("tmp");
-                if fs::write(&tmp, content).is_ok() {
+                if fs::write(&tmp, &content).is_ok() {
                     let _ = fs::rename(tmp, path);
                 }
+            }
+            if let Ok(settings_only) = serde_json::to_string_pretty(&self.config) {
+                let mut sctui_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+                sctui_dir.push("sctui");
+                let _ = fs::create_dir_all(&sctui_dir);
+                let _ = fs::write(sctui_dir.join("config.json"), &settings_only);
+
+                let mut sc_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+                sc_dir.push("soundcloud-tui");
+                let _ = fs::create_dir_all(&sc_dir);
+                let _ = fs::write(sc_dir.join("settings.json"), &settings_only);
             }
         }
     }
@@ -266,8 +447,9 @@ impl DataStore {
                 played_at: Local::now(),
             },
         );
-        if self.history.len() > 200 {
-            self.history.truncate(200);
+        let max_hist = self.config.history_limit.max(10);
+        if self.history.len() > max_hist {
+            self.history.truncate(max_hist);
         }
         self.save();
     }
