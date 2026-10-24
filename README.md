@@ -56,15 +56,16 @@ sudo apt install mpv yt-dlp
 mkdir -p ~/.local/bin && curl -fLo ~/.local/bin/sctui https://github.com/laguser/soundcloud-tui/releases/latest/download/sctui && chmod +x ~/.local/bin/sctui
 ```
 
-#### Pacman / Arch Linux (`makepkg`)
+#### Pacman / Arch Linux (Direct `.pkg.tar.zst` Install — No AUR/Rust needed)
 ```bash
-# Install prebuilt binary package via pacman (no Rust needed):
-curl -fsSL https://raw.githubusercontent.com/laguser/soundcloud-tui/main/PKGBUILD.bin -o PKGBUILD && makepkg -si
+sudo pacman -U https://github.com/laguser/soundcloud-tui/releases/latest/download/sctui-bin-x86_64.pkg.tar.zst
+```
 
-# Or build from source PKGBUILD:
-git clone https://github.com/laguser/soundcloud-tui.git
-cd soundcloud-tui
-makepkg -si
+*(Optional)* Or add `sctui` as a custom Pacman repository in `/etc/pacman.conf` to install with `sudo pacman -S sctui-bin`:
+```ini
+[sctui]
+SigLevel = Optional TrustAll
+Server = https://github.com/laguser/soundcloud-tui/releases/latest/download
 ```
 
 #### Via Cargo (Recommended)
@@ -140,15 +141,16 @@ sudo pacman -S mpv yt-dlp
 mkdir -p ~/.local/bin && curl -fLo ~/.local/bin/sctui https://github.com/laguser/soundcloud-tui/releases/latest/download/sctui && chmod +x ~/.local/bin/sctui
 ```
 
-#### Через Pacman / Arch Linux (`makepkg`):
+#### Через Pacman / Arch Linux (Прямая установка `.pkg.tar.zst` без AUR и Rust):
 ```bash
-# Установка готового бинарного пакета через pacman (без компиляции Rust):
-curl -fsSL https://raw.githubusercontent.com/laguser/soundcloud-tui/main/PKGBUILD.bin -o PKGBUILD && makepkg -si
+sudo pacman -U https://github.com/laguser/soundcloud-tui/releases/latest/download/sctui-bin-x86_64.pkg.tar.zst
+```
 
-# Или сборка из git-исходников:
-git clone https://github.com/laguser/soundcloud-tui.git
-cd soundcloud-tui
-makepkg -si
+*(Опционально)* Или добавьте репозиторий в `/etc/pacman.conf`, чтобы ставить через `sudo pacman -S sctui-bin`:
+```ini
+[sctui]
+SigLevel = Optional TrustAll
+Server = https://github.com/laguser/soundcloud-tui/releases/latest/download
 ```
 
 #### Через Cargo:
