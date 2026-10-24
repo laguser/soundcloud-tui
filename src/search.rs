@@ -26,6 +26,14 @@ pub enum SearchResult {
     Error(String),
 }
 
+#[derive(Clone, Debug)]
+struct SpotifyRawTrack {
+    title: String,
+    artist: String,
+    duration: f64,
+    artwork_url: Option<String>,
+}
+
 pub enum SearchTask {
     Query(String, bool),
     FetchRelated(String), // track_id
@@ -81,7 +89,10 @@ impl SearchEngine {
         let is_url = query.starts_with("http://")
             || query.starts_with("https://")
             || query.starts_with("soundcloud.com/")
-            || query.starts_with("snd.sc/");
+            || query.starts_with("snd.sc/")
+            || query.starts_with("spotify:")
+            || query.contains("spotify.com")
+            || query.contains("spotify.link");
         let _ = self.tx.send(SearchTask::Query(query.to_string(), is_url));
     }
 
@@ -346,7 +357,7 @@ impl SearchEngine {
             }
 
             // 4. Fallback to /resolve?url={track.url}&client_id={cid}
-            if !track.url.is_empty() && track.url.starts_with("http") {
+            if !track.url.is_empty() && track.url.starts_with("http") && track.url.contains("soundcloud.com") {
                 let resolve_url = format!(
                     "https://api-v2.soundcloud.com/resolve?url={}&client_id={}",
                     track.url, cid
@@ -388,7 +399,7 @@ impl SearchEngine {
         }
 
         // 5. Final fallback: resolve direct media URL via yt-dlp (preferring HTTP MP3/Opus over fMP4/HLS)
-        if !track.url.is_empty() && track.url.starts_with("http") {
+        if !track.url.is_empty() && (track.url.starts_with("http") || track.url.starts_with("ytsearch")) {
             let ytdl_out = Command::new("yt-dlp")
                 .arg("-4")
                 .arg("-g")
@@ -491,6 +502,349 @@ impl SearchEngine {
         }
     }
 
+    pub fn parse_spotify_link(input: &str) -> Option<(&'static str, String)> {
+        let trimmed = input.trim();
+        let stripped = trimmed.trim_start_matches("http://").trim_start_matches("https://");
+
+        // 1. spotify: URI format
+        if let Some(rest) = stripped.strip_prefix("spotify:") {
+            if let Some(id) = rest.strip_prefix("playlist:") {
+                let clean_id = id.split(&['?', '&', '#', '/'][..]).next().unwrap_or("").trim();
+                if !clean_id.is_empty() { return Some(("playlist", clean_id.to_string())); }
+            } else if let Some(id) = rest.strip_prefix("album:") {
+                let clean_id = id.split(&['?', '&', '#', '/'][..]).next().unwrap_or("").trim();
+                if !clean_id.is_empty() { return Some(("album", clean_id.to_string())); }
+            } else if let Some(id) = rest.strip_prefix("track:") {
+                let clean_id = id.split(&['?', '&', '#', '/'][..]).next().unwrap_or("").trim();
+                if !clean_id.is_empty() { return Some(("track", clean_id.to_string())); }
+            }
+        }
+
+        // 2. Web URL format: open.spotify.com, spotify.com, or spotify.link
+        if stripped.contains("spotify.com/") || stripped.contains("spotify.link/") {
+            if let Some(pos) = stripped.find("/playlist/") {
+                let id_part = &stripped[pos + 10..];
+                let clean_id = id_part.split(&['/', '?', '&', '#'][..]).next().unwrap_or("").trim();
+                if !clean_id.is_empty() { return Some(("playlist", clean_id.to_string())); }
+            }
+            if let Some(pos) = stripped.find("/album/") {
+                let id_part = &stripped[pos + 7..];
+                let clean_id = id_part.split(&['/', '?', '&', '#'][..]).next().unwrap_or("").trim();
+                if !clean_id.is_empty() { return Some(("album", clean_id.to_string())); }
+            }
+            if let Some(pos) = stripped.find("/track/") {
+                let id_part = &stripped[pos + 7..];
+                let clean_id = id_part.split(&['/', '?', '&', '#'][..]).next().unwrap_or("").trim();
+                if !clean_id.is_empty() { return Some(("track", clean_id.to_string())); }
+            }
+        }
+
+        // 3. Shortened links: spotify.link without direct path
+        if stripped.contains("spotify.link/") {
+            let full_url = if trimmed.starts_with("http") { trimmed.to_string() } else { format!("https://{}", trimmed) };
+            if let Ok(out) = Command::new("curl")
+                .arg("-s")
+                .arg("-I")
+                .arg("-L")
+                .arg("-m")
+                .arg("5")
+                .arg("-o")
+                .arg("/dev/null")
+                .arg("-w")
+                .arg("%{url_effective}")
+                .arg(&full_url)
+                .output()
+            {
+                let effective = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !effective.is_empty() && effective != full_url && effective != trimmed {
+                    return Self::parse_spotify_link(&effective);
+                }
+            }
+        }
+
+        None
+    }
+
+    fn extract_next_data(html: &str) -> Option<serde_json::Value> {
+        let tag = r#"id="__NEXT_DATA__""#;
+        let start_pos = html.find(tag)?;
+        let rest = &html[start_pos..];
+        let gt_pos = rest.find('>')?;
+        let json_start = &rest[gt_pos + 1..];
+        let script_end = json_start.find("</script>")?;
+        let json_str = &json_start[..script_end];
+        serde_json::from_str(json_str).ok()
+    }
+
+    fn extract_spotify_artwork(entity: &serde_json::Value) -> Option<String> {
+        if let Some(sources) = entity.get("coverArt").and_then(|ca| ca.get("sources")).and_then(|s| s.as_array()) {
+            for src in sources {
+                if let Some(u) = src.get("url").and_then(|u| u.as_str()) {
+                    if !u.is_empty() {
+                        return Some(u.to_string());
+                    }
+                }
+            }
+        }
+        if let Some(images) = entity.get("visualIdentity").and_then(|vi| vi.get("image")).and_then(|img| img.as_array()) {
+            for img in images.iter().rev() {
+                if let Some(u) = img.get("url").and_then(|u| u.as_str()) {
+                    if !u.is_empty() {
+                        return Some(u.to_string());
+                    }
+                }
+            }
+        }
+        if let Some(images) = entity.get("images").and_then(|img| img.as_array()) {
+            for img in images {
+                if let Some(u) = img.get("url").and_then(|u| u.as_str()) {
+                    if !u.is_empty() {
+                        return Some(u.to_string());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn resolve_single_spotify_track(
+        raw: &SpotifyRawTrack,
+        cid: &str,
+        fallback_artwork: Option<&str>,
+    ) -> TrackItem {
+        let search_q = format!("{} {}", raw.artist, raw.title);
+        let encoded_q = Self::url_encode(&search_q);
+        let search_url = format!(
+            "https://api-v2.soundcloud.com/search/tracks?q={}&client_id={}&limit=1",
+            encoded_q, cid
+        );
+
+        let output = Command::new("curl")
+            .arg("-s")
+            .arg("-m")
+            .arg("5")
+            .arg("-H")
+            .arg("User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .arg(&search_url)
+            .output();
+
+        if let Ok(out) = output {
+            if out.status.success() {
+                if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                    if let Some(col) = val.get("collection").and_then(|c| c.as_array()) {
+                        if let Some(item) = col.first() {
+                            let sc_id = item.get("id").map(|i| i.to_string()).unwrap_or_default();
+                            let sc_url = item.get("permalink_url").and_then(|u| u.as_str()).unwrap_or("").to_string();
+                            if !sc_id.is_empty() && !sc_url.is_empty() {
+                                let sc_art = item.get("artwork_url").and_then(|a| a.as_str()).map(|s| s.to_string())
+                                    .or_else(|| fallback_artwork.map(|s| s.to_string()));
+                                let sc_waveform = item.get("waveform_url").and_then(|w| w.as_str()).map(|s| s.to_string());
+                                let sc_u_permalink = item.get("user").and_then(|u| u.get("permalink")).and_then(|p| p.as_str()).map(|s| s.to_string());
+                                let sc_u_id = item.get("user").and_then(|u| u.get("id")).map(|i| i.to_string());
+                                let sc_duration = item.get("duration").and_then(|d| d.as_f64()).map(|ms| ms / 1000.0).unwrap_or(raw.duration);
+
+                                return TrackItem {
+                                    id: sc_id,
+                                    title: raw.title.clone(),
+                                    artist: raw.artist.clone(),
+                                    duration: if sc_duration > 0.0 { sc_duration } else { raw.duration },
+                                    url: sc_url,
+                                    stream_url: None,
+                                    artwork_url: sc_art,
+                                    waveform_url: sc_waveform,
+                                    user_permalink: sc_u_permalink,
+                                    user_id: sc_u_id,
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Fallback to YouTube search query via ytsearch1:
+        let yt_query = format!("ytsearch1:{} {}", raw.artist, raw.title);
+        TrackItem {
+            id: format!("sp_{}", Self::url_encode(&raw.title)),
+            title: raw.title.clone(),
+            artist: raw.artist.clone(),
+            duration: raw.duration,
+            url: yt_query,
+            stream_url: None,
+            artwork_url: raw.artwork_url.clone().or_else(|| fallback_artwork.map(|s| s.to_string())),
+            waveform_url: None,
+            user_permalink: None,
+            user_id: None,
+        }
+    }
+
+    fn fetch_spotify_entity(
+        kind: &str,
+        sp_id: &str,
+        original_query: &str,
+        cid: &str,
+    ) -> SearchResult {
+        let embed_url = format!("https://open.spotify.com/embed/{}/{}", kind, sp_id);
+        let output = Command::new("curl")
+            .arg("-s")
+            .arg("-L")
+            .arg("-m")
+            .arg("10")
+            .arg("-H")
+            .arg("User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .arg(&embed_url)
+            .output();
+
+        let out = match output {
+            Ok(o) if o.status.success() => o,
+            _ => return SearchResult::Error("Failed to fetch Spotify embed page".to_string()),
+        };
+
+        let html = String::from_utf8_lossy(&out.stdout);
+        let json_data = match Self::extract_next_data(&html) {
+            Some(v) => v,
+            None => return SearchResult::Error("Failed to parse Spotify metadata from embed page".to_string()),
+        };
+
+        let entity = match json_data
+            .get("props")
+            .and_then(|p| p.get("pageProps"))
+            .and_then(|pp| {
+                pp.get("state")
+                    .and_then(|s| s.get("data"))
+                    .and_then(|d| d.get("entity"))
+                    .or_else(|| pp.get("entity"))
+            })
+        {
+            Some(e) => e,
+            None => return SearchResult::Error("Spotify entity data not found in embed".to_string()),
+        };
+
+        let title = entity
+            .get("title")
+            .or_else(|| entity.get("name"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("Spotify Playlist")
+            .to_string();
+
+        let author = entity
+            .get("subtitle")
+            .or_else(|| entity.get("owner").and_then(|o| o.get("name")))
+            .and_then(|a| a.as_str())
+            .unwrap_or("Spotify")
+            .to_string();
+
+        let artwork = Self::extract_spotify_artwork(entity);
+
+        if kind == "track" {
+            let artist_name = entity
+                .get("artists")
+                .and_then(|a| a.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|a| a.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or(&author);
+            let duration = entity
+                .get("duration")
+                .and_then(|d| d.as_f64())
+                .map(|ms| ms / 1000.0)
+                .unwrap_or(0.0);
+            let raw = SpotifyRawTrack {
+                title: title.clone(),
+                artist: artist_name.to_string(),
+                duration,
+                artwork_url: artwork.clone(),
+            };
+            let resolved = Self::resolve_single_spotify_track(&raw, cid, artwork.as_deref());
+            return SearchResult::Success(vec![resolved]);
+        }
+
+        let track_list = match entity.get("trackList").and_then(|tl| tl.as_array()) {
+            Some(tl) if !tl.is_empty() => tl,
+            _ => return SearchResult::Error("No tracks found in Spotify playlist/album".to_string()),
+        };
+
+        let mut raw_tracks = Vec::with_capacity(track_list.len());
+        for (idx, item) in track_list.iter().enumerate() {
+            let t_title = item.get("title").and_then(|t| t.as_str()).unwrap_or("Unknown").to_string();
+            let t_artist = item
+                .get("subtitle")
+                .or_else(|| {
+                    item.get("artists")
+                        .and_then(|a| a.as_array())
+                        .and_then(|arr| arr.first())
+                        .and_then(|a| a.get("name"))
+                })
+                .and_then(|a| a.as_str())
+                .unwrap_or(&author)
+                .to_string();
+            let t_duration = item.get("duration").and_then(|d| d.as_f64()).map(|ms| ms / 1000.0).unwrap_or(0.0);
+            raw_tracks.push((
+                idx,
+                SpotifyRawTrack {
+                    title: t_title,
+                    artist: t_artist,
+                    duration: t_duration,
+                    artwork_url: artwork.clone(),
+                },
+            ));
+        }
+
+        let total = raw_tracks.len();
+        let num_workers = 8.min(total.max(1));
+        raw_tracks.reverse(); // so pop() yields idx 0 first
+        let queue = Arc::new(Mutex::new(raw_tracks));
+        let results = Arc::new(Mutex::new(Vec::with_capacity(total)));
+
+        let mut handles = Vec::new();
+        for _ in 0..num_workers {
+            let q = Arc::clone(&queue);
+            let res = Arc::clone(&results);
+            let cid_copy = cid.to_string();
+            let pl_art = artwork.clone();
+
+            handles.push(std::thread::spawn(move || {
+                loop {
+                    let item = {
+                        let mut guard = q.lock().unwrap();
+                        guard.pop()
+                    };
+                    let (idx, raw) = match item {
+                        Some(it) => it,
+                        None => break,
+                    };
+
+                    let resolved = Self::resolve_single_spotify_track(&raw, &cid_copy, pl_art.as_deref());
+                    let mut r_guard = res.lock().unwrap();
+                    r_guard.push((idx, resolved));
+                }
+            }));
+        }
+
+        for h in handles {
+            let _ = h.join();
+        }
+
+        let mut resolved_list = match Arc::try_unwrap(results) {
+            Ok(mutex) => mutex.into_inner().unwrap_or_default(),
+            Err(arc) => arc.lock().unwrap().clone(),
+        };
+        resolved_list.sort_by_key(|(idx, _)| *idx);
+        let final_tracks: Vec<TrackItem> = resolved_list.into_iter().map(|(_, t)| t).collect();
+
+        let playlist = crate::storage::PlaylistItem {
+            id: format!("spotify_{}_{}", kind, sp_id),
+            title,
+            author,
+            track_count: final_tracks.len(),
+            url: original_query.to_string(),
+            tracks: final_tracks,
+            artwork_url: artwork,
+        };
+
+        SearchResult::PlaylistLoaded(playlist)
+    }
+
     fn execute_search(
         query: &str,
         is_direct_url: bool,
@@ -500,6 +854,11 @@ impl SearchEngine {
             let guard = cached_cid.lock().unwrap();
             guard.clone().unwrap_or_else(|| "tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ".to_string())
         };
+
+        // 1. Spotify Link Handling (Playlist, Album, or Track)
+        if let Some((kind, sp_id)) = Self::parse_spotify_link(query) {
+            return Self::fetch_spotify_entity(kind, &sp_id, query, &cid);
+        }
 
         // If direct URL, check if it's a playlist or track via api-v2/resolve
         if is_direct_url {

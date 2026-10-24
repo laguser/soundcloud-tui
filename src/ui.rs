@@ -51,6 +51,8 @@ pub fn render(f: &mut Frame, app: &App) {
     // Modal overlays (Creating playlist or adding to playlist or artwork URL)
     if let Some(chars) = &app.modal_input {
         render_input_modal(f, app, chars, "New Playlist Name:");
+    } else if let Some(chars) = &app.modal_import_input {
+        render_input_modal(f, app, chars, "Spotify playlist/album link:");
     } else if let Some((_, chars)) = &app.modal_artwork_input {
         render_artwork_input_modal(f, app, chars);
     } else if let Some(target_track) = &app.modal_target_track {
@@ -323,7 +325,7 @@ fn render_playlists_view(f: &mut Frame, app: &App, area: Rect) {
         let empty = Paragraph::new(vec![
             Line::from(""),
             Line::from(Span::styled("no saved playlists", Style::default().fg(Color::Rgb(80, 80, 80)))),
-            Line::from(Span::styled("press 'c' to create a playlist or paste any SoundCloud playlist link in search", Style::default().fg(Color::Rgb(50, 50, 50)))),
+            Line::from(Span::styled("press 'c' to create, 'i' to import from Spotify, or paste any SoundCloud playlist link in search", Style::default().fg(Color::Rgb(50, 50, 50)))),
         ])
         .alignment(Alignment::Center);
         f.render_widget(empty, area);
@@ -342,7 +344,7 @@ fn render_playlists_view(f: &mut Frame, app: &App, area: Rect) {
     let header = Paragraph::new(Line::from(vec![
         Span::styled("  ≡ ", Style::default().fg(accent).add_modifier(Modifier::BOLD)),
         Span::styled(format!("Your Playlists ({})", app.store.playlists.len()), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-        Span::styled("  •  'c' create  •  'Shift+C' set cover image  •  'd' delete", Style::default().fg(Color::Rgb(90, 90, 90))),
+        Span::styled("  •  'c' create  •  'i' import Spotify  •  'Shift+C' cover  •  'd' delete", Style::default().fg(Color::Rgb(90, 90, 90))),
     ]));
     f.render_widget(header, chunks[0]);
 

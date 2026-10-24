@@ -99,6 +99,7 @@ pub struct App {
     pub modal_target_track: Option<TrackItem>,
     pub modal_playlist_cursor: usize,
     pub modal_artwork_input: Option<(usize, Vec<char>)>,
+    pub modal_import_input: Option<Vec<char>>,
 
     // Audio status & playback modes
     pub player: AudioPlayer,
@@ -186,6 +187,7 @@ impl App {
             modal_target_track: None,
             modal_playlist_cursor: 0,
             modal_artwork_input: None,
+            modal_import_input: None,
 
             player,
             search_engine: SearchEngine::new(store.config.client_id.clone()),
@@ -648,6 +650,31 @@ impl App {
             return;
         }
 
+        // Modal for importing a Spotify playlist/album link
+        if let Some(chars) = &mut self.modal_import_input {
+            match key.code {
+                KeyCode::Esc => {
+                    self.modal_import_input = None;
+                }
+                KeyCode::Char(c) => chars.push(c),
+                KeyCode::Backspace => {
+                    chars.pop();
+                }
+                KeyCode::Enter => {
+                    let link: String = chars.iter().collect();
+                    let link = link.trim().to_string();
+                    self.modal_import_input = None;
+                    if !link.is_empty() {
+                        self.is_searching = true;
+                        self.set_status("Importing Spotify playlist (resolving tracks on SoundCloud)...");
+                        self.search_engine.search(&link);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // If modal input is active for playlist artwork URL
         if let Some((pl_idx, chars)) = &mut self.modal_artwork_input {
             match key.code {
@@ -997,6 +1024,9 @@ impl App {
                 if self.view_mode == ViewMode::Playlists {
                     self.modal_input = Some(Vec::new());
                 }
+            }
+            KeyCode::Char('i') if self.view_mode == ViewMode::Playlists => {
+                self.modal_import_input = Some(Vec::new());
             }
             KeyCode::Char('C') => {
                 // Edit cover artwork URL for playlist
@@ -1693,6 +1723,7 @@ impl App {
                     self.set_status(&format!("Playlist loaded: {} ({} tracks)", playlist.title, playlist.track_count));
                     self.store.save_playlist(playlist);
                     self.selected_playlist_idx = Some(0);
+                    self.playlists_cursor = 0;
                     self.playlist_detail_cursor = 0;
                     self.view_mode = ViewMode::PlaylistDetail;
                 }
