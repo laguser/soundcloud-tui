@@ -122,6 +122,7 @@ pub struct App {
     pub prefetched_track_id: Option<String>,
     pub related_fetched_for_id: Option<String>,
     pub pending_auto_wave_play: bool,
+    pub active_playing_track_id: Option<String>,
 
     // Dynamic waveform samples
     pub current_waveform: Vec<u8>,
@@ -214,6 +215,7 @@ impl App {
             prefetched_track_id: None,
             related_fetched_for_id: None,
             pending_auto_wave_play: false,
+            active_playing_track_id: None,
             current_waveform: Vec::new(),
             loaded_waveform_track_id: None,
             status_message: Some(("Ready. Type to search SoundCloud".to_string(), Instant::now())),
@@ -253,12 +255,12 @@ impl App {
 
     pub fn play_track(&mut self, track: TrackItem) {
         // Remember previous track position and speed before switching
-        let prev_id = self.current_track().map(|t| t.id.clone());
-        if let Some(id) = prev_id {
-            if self.current_pos > 1.0 {
-                self.store.save_track_state(&id, self.current_pos, self.current_speed);
+        if let Some(prev_id) = self.active_playing_track_id.take() {
+            if self.current_pos > 3.0 && self.total_duration > 10.0 && self.current_pos < self.total_duration - 5.0 {
+                self.store.save_track_state(&prev_id, self.current_pos, self.current_speed);
             }
         }
+        self.player.set_pause(true);
 
         self.store.add_history(track.clone());
 
@@ -278,25 +280,17 @@ impl App {
         self.player.ensure_running();
 
         // Restore saved position and speed for this track if remembered
+        self.current_speed = 1.0;
+        self.pending_resume_pos = None;
+        self.current_pos = 0.0;
         if self.store.config.resume_playback {
             if let Some(state) = self.store.get_track_state(&track.id).cloned() {
                 self.current_speed = state.speed;
                 if state.position > 3.0 && (track.duration <= 0.0 || state.position < track.duration - 5.0) {
                     self.pending_resume_pos = Some(state.position);
                     self.current_pos = state.position;
-                } else {
-                    self.pending_resume_pos = None;
-                    self.current_pos = 0.0;
                 }
-            } else {
-                self.current_speed = 1.0;
-                self.pending_resume_pos = None;
-                self.current_pos = 0.0;
             }
-        } else {
-            self.current_speed = 1.0;
-            self.pending_resume_pos = None;
-            self.current_pos = 0.0;
         }
 
         // Update MPRIS2 for Caelestia Shell and system media keys immediately
@@ -1577,6 +1571,7 @@ impl App {
         while let Some(ev) = self.player.poll_event() {
             match ev {
                 crate::audio::PlayerEvent::FileLoaded => {
+                    self.active_playing_track_id = self.current_track().map(|t| t.id.clone());
                     if let Some(pos) = self.pending_resume_pos.take() {
                         self.player.seek_to(pos);
                     }
@@ -1585,16 +1580,20 @@ impl App {
                     }
                 }
                 crate::audio::PlayerEvent::TimePos(pos) => {
-                    self.current_pos = pos;
-                    let should_save = match self.last_saved_pos_instant {
-                        Some(last) => last.elapsed() >= std::time::Duration::from_secs(3),
-                        None => true,
-                    };
-                    if should_save {
-                        self.last_saved_pos_instant = Some(std::time::Instant::now());
-                        let cur_id = self.current_track().map(|t| t.id.clone());
-                        if let Some(id) = cur_id {
-                            self.store.save_track_state(&id, pos, self.current_speed);
+                    let cur_id = self.current_track().map(|t| t.id.clone());
+                    if cur_id.is_some() && cur_id == self.active_playing_track_id {
+                        self.current_pos = pos;
+                        let should_save = match self.last_saved_pos_instant {
+                            Some(last) => last.elapsed() >= std::time::Duration::from_secs(3),
+                            None => true,
+                        };
+                        if should_save {
+                            self.last_saved_pos_instant = Some(std::time::Instant::now());
+                            if let Some(ref id) = cur_id {
+                                if self.store.config.resume_playback && pos > 3.0 && self.total_duration > 10.0 && pos < self.total_duration - 5.0 {
+                                    self.store.save_track_state(id, pos, self.current_speed);
+                                }
+                            }
                         }
                     }
                 }
@@ -1608,11 +1607,12 @@ impl App {
                 }
                 crate::audio::PlayerEvent::Volume(v) => self.volume = v as u32,
                 crate::audio::PlayerEvent::PlaybackEnded => {
-                    let cur_id = self.current_track().map(|t| t.id.clone());
-                    if let Some(id) = cur_id {
+                    if let Some(id) = self.active_playing_track_id.take() {
                         // Mark track as finished so next time it starts from 0:00
                         self.store.save_track_state(&id, 0.0, self.current_speed);
                     }
+                    self.current_pos = 0.0;
+                    self.pending_resume_pos = None;
                     self.play_next();
                 }
                 crate::audio::PlayerEvent::Idle(idle) => {

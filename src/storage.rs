@@ -202,7 +202,7 @@ pub struct Config {
 
     #[serde(default = "default_true")]
     pub auto_wave: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub resume_playback: bool,
     #[serde(default = "default_seek_step")]
     pub seek_step: u32,
@@ -296,7 +296,7 @@ impl Default for Config {
             speed_step: 0.05,
             audio_filter: AudioFilter::None,
             auto_wave: true,
-            resume_playback: true,
+            resume_playback: false,
             seek_step: 5,
             default_shuffle: false,
             default_repeat: "off".to_string(),
