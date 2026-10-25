@@ -1873,5 +1873,24 @@ mod tests {
         assert!(stream2.is_some());
         let s2 = stream2.unwrap();
         assert!(s2.starts_with("http"));
+
+        // 3. Алла Пугачева - Звездное Лето (SoundCloud native yt-dlp fallback)
+        let track3 = TrackItem {
+            id: "58164351".to_string(),
+            title: "Алла Пугачева - Звездное Лето".to_string(),
+            artist: "sovetski11".to_string(),
+            duration: 275.0,
+            url: "https://soundcloud.com/sovetski11/1qmkmtcpmat0".to_string(),
+            stream_url: None,
+            artwork_url: None,
+            waveform_url: None,
+            user_permalink: None,
+            user_id: None,
+        };
+        let stream3 = SearchEngine::resolve_stream_url(&track3, &cid_holder);
+        println!("Stream 3 (Pugacheva): {:?}", stream3.as_ref().map(|s| &s[..50.min(s.len())]));
+        assert!(stream3.is_some());
+        let s3 = stream3.unwrap();
+        assert!(s3.starts_with("http"));
     }
 }
