@@ -220,7 +220,7 @@ impl SearchEngine {
             .arg("-4")
             .arg("-g")
             .arg("-f")
-            .arg("http_mp3_1_0/hls_mp3_1_0/hls_opus_0_0/bestaudio/best")
+            .arg("bestaudio/best")
             .arg("--no-playlist")
             .arg("--no-warnings")
             .arg(query_or_url)
@@ -276,9 +276,13 @@ impl SearchEngine {
             let stream_res = Command::new("curl")
                 .arg("-s")
                 .arg("-m")
-                .arg("3")
+                .arg("4")
                 .arg("-H")
                 .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
+                .arg("-H")
+                .arg("Referer: https://soundcloud.com/")
+                .arg("-H")
+                .arg("Origin: https://soundcloud.com")
                 .arg(&stream_lookup)
                 .output()
                 .ok()?;
@@ -291,9 +295,13 @@ impl SearchEngine {
                             let mut chk_cmd = Command::new("curl");
                             chk_cmd.arg("-s")
                                 .arg("-m")
-                                .arg("2")
+                                .arg("4")
                                 .arg("-H")
-                                .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0");
+                                .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
+                                .arg("-H")
+                                .arg("Referer: https://soundcloud.com/")
+                                .arg("-H")
+                                .arg("Origin: https://soundcloud.com");
                             if !direct_url.contains(".m3u8") {
                                 chk_cmd.arg("-r").arg("0-64");
                             }
@@ -340,9 +348,13 @@ impl SearchEngine {
                 let output = Command::new("curl")
                     .arg("-s")
                     .arg("-m")
-                    .arg("3")
+                    .arg("4")
                     .arg("-H")
                     .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
+                    .arg("-H")
+                    .arg("Referer: https://soundcloud.com/")
+                    .arg("-H")
+                    .arg("Origin: https://soundcloud.com")
                     .arg(&api_url)
                     .output()
                     .ok();
@@ -368,9 +380,6 @@ impl SearchEngine {
                                         }
                                     }
                                 }
-                                // If CID successfully retrieved the track from SC API, but transcodings failed or are unplayable,
-                                // trying other CIDs will not help CloudFront CDN signatures. Break and fallback to YouTube!
-                                break;
                             }
                         }
                     }
@@ -410,9 +419,13 @@ impl SearchEngine {
                 let output = Command::new("curl")
                     .arg("-s")
                     .arg("-m")
-                    .arg("3")
+                    .arg("4")
                     .arg("-H")
                     .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
+                    .arg("-H")
+                    .arg("Referer: https://soundcloud.com/")
+                    .arg("-H")
+                    .arg("Origin: https://soundcloud.com")
                     .arg(&resolve_url)
                     .output()
                     .ok();
@@ -433,7 +446,6 @@ impl SearchEngine {
                                         }
                                     }
                                 }
-                                break;
                             }
                         }
                     }
@@ -441,8 +453,8 @@ impl SearchEngine {
             }
         }
 
-        // 5. Final fallback: resolve direct media URL via yt-dlp ONLY IF not soundcloud.com
-        if !track.url.is_empty() && !track.url.contains("soundcloud.com") && (track.url.starts_with("http") || track.url.starts_with("ytsearch")) {
+        // 5. Fallback: resolve direct stream URL via yt-dlp on track.url (supports soundcloud.com natively!)
+        if !track.url.is_empty() && (track.url.starts_with("http") || track.url.starts_with("ytsearch")) {
             if let Some(stream) = Self::resolve_youtube_direct(&track.url) {
                 return Some(stream);
             }

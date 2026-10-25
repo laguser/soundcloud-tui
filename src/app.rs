@@ -1629,10 +1629,22 @@ impl App {
                         }
                         if !self.fallback_tried_track_ids.contains(&track.id) {
                             self.fallback_tried_track_ids.insert(track.id.clone());
-                            self.set_status(&format!("Switching to YouTube audio fallback: {}", track.title));
+                            self.set_status(&format!("Recovering stream via yt-dlp: {}", track.title));
                             let tx = self.stream_resolve_tx.clone();
                             let track_clone = track.clone();
                             std::thread::spawn(move || {
+                                // 1. Try resolving track.url directly with yt-dlp
+                                if !track_clone.url.is_empty() && track_clone.url.starts_with("http") {
+                                    if let Some(resolved) = crate::search::SearchEngine::resolve_youtube_direct(&track_clone.url) {
+                                        let _ = tx.send(StreamResolveEvent::Resolved {
+                                            track_id: track_clone.id.clone(),
+                                            url: resolved,
+                                            source: "ytdl_direct",
+                                        });
+                                        return;
+                                    }
+                                }
+                                // 2. If track.url failed, search YouTube as last resort
                                 let clean_title = track_clone.title.trim();
                                 let clean_artist = track_clone.artist.trim();
                                 let query = if clean_artist.is_empty() || clean_title.to_lowercase().contains(&clean_artist.to_lowercase()) {
