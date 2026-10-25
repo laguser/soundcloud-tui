@@ -34,7 +34,7 @@ impl AudioPlayer {
     pub fn new() -> Self {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_millis();
         let ipc_path = format!("/tmp/sctui_mpv_{}_{}.sock", std::process::id(), timestamp);
 

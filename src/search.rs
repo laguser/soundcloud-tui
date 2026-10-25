@@ -250,7 +250,7 @@ impl SearchEngine {
         }
 
         let initial_cid = {
-            let guard = client_id_holder.lock().unwrap();
+            let guard = client_id_holder.lock().unwrap_or_else(|e| e.into_inner());
             guard.clone().unwrap_or_else(|| "QhVEWrrJKvW4uSU5u5EoI0FTXYUGzy5k".to_string())
         };
 
@@ -320,12 +320,13 @@ impl SearchEngine {
             }).unwrap_or(false);
 
             if is_progressive_trans {
-                let trans_url = track.stream_url.as_ref().unwrap();
-                if let Some(playable) = try_resolve(trans_url, cid, None) {
-                    if let Ok(mut g) = client_id_holder.lock() {
-                        *g = Some(cid.to_string());
+                if let Some(trans_url) = track.stream_url.as_deref() {
+                    if let Some(playable) = try_resolve(trans_url, cid, None) {
+                        if let Ok(mut g) = client_id_holder.lock() {
+                            *g = Some(cid.to_string());
+                        }
+                        return Some(playable);
                     }
-                    return Some(playable);
                 }
             }
 
@@ -386,12 +387,13 @@ impl SearchEngine {
             }).unwrap_or(false);
 
             if has_valid_unencrypted_trans {
-                let trans_url = track.stream_url.as_ref().unwrap();
-                if let Some(playable) = try_resolve(trans_url, cid, None) {
-                    if let Ok(mut g) = client_id_holder.lock() {
-                        *g = Some(cid.to_string());
+                if let Some(trans_url) = track.stream_url.as_deref() {
+                    if let Some(playable) = try_resolve(trans_url, cid, None) {
+                        if let Ok(mut g) = client_id_holder.lock() {
+                            *g = Some(cid.to_string());
+                        }
+                        return Some(playable);
                     }
-                    return Some(playable);
                 }
             } else if let Some(trans_url) = &track.stream_url {
                 if trans_url.starts_with("http") && !trans_url.contains("api-v2.soundcloud.com") && !trans_url.contains("cenc") && !trans_url.contains("encrypted") {
@@ -894,7 +896,7 @@ impl SearchEngine {
             handles.push(std::thread::spawn(move || {
                 loop {
                     let item = {
-                        let mut guard = q.lock().unwrap();
+                        let mut guard = q.lock().unwrap_or_else(|e| e.into_inner());
                         guard.pop()
                     };
                     let (idx, raw) = match item {
@@ -903,7 +905,7 @@ impl SearchEngine {
                     };
 
                     let resolved = Self::resolve_single_spotify_track(&raw, &cid_copy, pl_art.as_deref());
-                    let mut r_guard = res.lock().unwrap();
+                    let mut r_guard = res.lock().unwrap_or_else(|e| e.into_inner());
                     r_guard.push((idx, resolved));
                 }
             }));
@@ -915,7 +917,7 @@ impl SearchEngine {
 
         let mut resolved_list = match Arc::try_unwrap(results) {
             Ok(mutex) => mutex.into_inner().unwrap_or_default(),
-            Err(arc) => arc.lock().unwrap().clone(),
+            Err(arc) => arc.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         };
         resolved_list.sort_by_key(|(idx, _)| *idx);
         let final_tracks: Vec<TrackItem> = resolved_list.into_iter().map(|(_, t)| t).collect();
@@ -939,7 +941,7 @@ impl SearchEngine {
         cached_cid: &Arc<Mutex<Option<String>>>,
     ) -> SearchResult {
         let cid = {
-            let guard = cached_cid.lock().unwrap();
+            let guard = cached_cid.lock().unwrap_or_else(|e| e.into_inner());
             guard.clone().unwrap_or_else(|| "tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ".to_string())
         };
 
@@ -1277,7 +1279,7 @@ impl SearchEngine {
 
     fn execute_fetch_related(track_id: &str, cached_cid: &Arc<Mutex<Option<String>>>) -> SearchResult {
         let cid = {
-            let guard = cached_cid.lock().unwrap();
+            let guard = cached_cid.lock().unwrap_or_else(|e| e.into_inner());
             guard.clone().unwrap_or_else(|| "QhVEWrrJKvW4uSU5u5EoI0FTXYUGzy5k".to_string())
         };
 
@@ -1366,7 +1368,7 @@ impl SearchEngine {
 
     fn execute_fetch_user(user_query: &str, cached_cid: &Arc<Mutex<Option<String>>>) -> SearchResult {
         let cid = {
-            let guard = cached_cid.lock().unwrap();
+            let guard = cached_cid.lock().unwrap_or_else(|e| e.into_inner());
             guard.clone().unwrap_or_else(|| "tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ".to_string())
         };
 
@@ -1496,7 +1498,7 @@ impl SearchEngine {
         }
 
         let cid = jwt_client_id.unwrap_or_else(|| {
-            let guard = cached_cid.lock().unwrap();
+            let guard = cached_cid.lock().unwrap_or_else(|e| e.into_inner());
             guard.clone().unwrap_or_else(|| "QhVEWrrJKvW4uSU5u5EoI0FTXYUGzy5k".to_string())
         });
 

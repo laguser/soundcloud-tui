@@ -263,7 +263,10 @@ impl App {
         self.store.add_history(track.clone());
 
         // Put in queue if not present or select it
-        if let Some(pos) = self.queue.iter().position(|t| t.url == track.url) {
+        if let Some(pos) = self.queue.iter().position(|t| {
+            (!t.id.is_empty() && !track.id.is_empty() && t.id == track.id)
+                || (!t.url.is_empty() && !track.url.is_empty() && t.url == track.url)
+        }) {
             self.current_track_idx = Some(pos);
         } else {
             self.queue.push(track.clone());
@@ -323,8 +326,7 @@ impl App {
             if self.current_speed != 1.0 {
                 self.player.set_speed(self.current_speed);
             }
-            if let Some(pos) = self.pending_resume_pos.take() {
-                self.player.seek_to(pos);
+            if let Some(pos) = self.pending_resume_pos {
                 self.set_status(&format!("Resumed at {}: {}", crate::ui::format_duration(pos), track.title));
             } else {
                 self.set_status(&format!("Playing (cached): {}", track.title));
@@ -516,6 +518,15 @@ impl App {
 
     pub fn play_prev(&mut self) {
         if self.queue.is_empty() {
+            return;
+        }
+        if self.current_pos > 3.0 {
+            self.player.seek_to(0.0);
+            self.current_pos = 0.0;
+            self.pending_resume_pos = None;
+            if let Some(track) = self.current_track() {
+                self.set_status(&format!("Restarted: {}", track.title));
+            }
             return;
         }
         let prev_idx = match self.current_track_idx {
@@ -718,12 +729,12 @@ impl App {
                 KeyCode::Esc => {
                     self.modal_target_track = None;
                 }
-                KeyCode::Up | KeyCode::Char('k') => {
+                KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') | KeyCode::Char('л') | KeyCode::Char('Л') => {
                     if self.modal_playlist_cursor > 0 {
                         self.modal_playlist_cursor -= 1;
                     }
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') | KeyCode::Char('о') | KeyCode::Char('О') => {
                     if !self.store.playlists.is_empty() && self.modal_playlist_cursor + 1 < self.store.playlists.len() {
                         self.modal_playlist_cursor += 1;
                     }
@@ -922,13 +933,13 @@ impl App {
             KeyCode::Char('\\') | KeyCode::Char('0') => {
                 self.reset_speed();
             }
-            KeyCode::Char('n') => {
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Char('т') | KeyCode::Char('Т') => {
                 self.play_next();
             }
-            KeyCode::Char('p') => {
+            KeyCode::Char('p') | KeyCode::Char('P') | KeyCode::Char('з') | KeyCode::Char('З') => {
                 self.play_prev();
             }
-            KeyCode::Char('y') => {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Char('н') | KeyCode::Char('Н') => {
                 // Toggle Lyrics view
                 self.view_mode = if self.view_mode == ViewMode::Lyrics {
                     ViewMode::Queue
@@ -937,19 +948,19 @@ impl App {
                 };
                 self.is_editing_search = false;
             }
-            KeyCode::Char('H') => {
+            KeyCode::Char('H') | KeyCode::Char('р') | KeyCode::Char('Р') => {
                 // Jump to History view
                 self.view_mode = ViewMode::History;
                 self.is_editing_search = false;
                 self.set_status("Switched to History");
             }
-            KeyCode::Char('F') => {
+            KeyCode::Char('F') | KeyCode::Char('А') => {
                 // Jump to Favorites view
                 self.view_mode = ViewMode::Favorites;
                 self.is_editing_search = false;
                 self.set_status("Switched to Favorites");
             }
-            KeyCode::Char('Q') => {
+            KeyCode::Char('Q') | KeyCode::Char('Й') => {
                 // Jump to Queue view
                 self.view_mode = ViewMode::Queue;
                 self.is_editing_search = false;
@@ -983,7 +994,7 @@ impl App {
                 self.view_mode = ViewMode::Settings;
                 self.is_editing_search = false;
             }
-            KeyCode::Char('S') => {
+            KeyCode::Char('S') | KeyCode::Char('Ы') => {
                 // Sync library if oauth_token is set
                 if let Some(token) = self.store.config.oauth_token.clone() {
                     self.set_status("Syncing your SoundCloud library...");
@@ -992,11 +1003,11 @@ impl App {
                     self.set_status("Set 'oauth_token' in ~/.config/soundcloud-tui/config.json first");
                 }
             }
-            KeyCode::Char('s') => {
+            KeyCode::Char('s') | KeyCode::Char('ы') => {
                 self.shuffle = !self.shuffle;
                 self.set_status(&format!("Shuffle: {}", if self.shuffle { "ON" } else { "OFF" }));
             }
-            KeyCode::Char('r') => {
+            KeyCode::Char('r') | KeyCode::Char('R') | KeyCode::Char('к') | KeyCode::Char('К') => {
                 self.repeat = match self.repeat {
                     RepeatMode::Off => RepeatMode::All,
                     RepeatMode::All => RepeatMode::One,
@@ -1004,7 +1015,7 @@ impl App {
                 };
                 self.set_status(&format!("Repeat: {}", self.repeat.name().to_uppercase()));
             }
-            KeyCode::Char('u') => {
+            KeyCode::Char('u') | KeyCode::Char('U') | KeyCode::Char('г') | KeyCode::Char('Г') => {
                 // View profile of artist for current/highlighted track
                 let track = match self.view_mode {
                     ViewMode::Search => self.search_results.get(self.search_cursor).cloned(),
@@ -1022,16 +1033,16 @@ impl App {
                     self.search_engine.fetch_user(query);
                 }
             }
-            KeyCode::Char('c') => {
+            KeyCode::Char('c') | KeyCode::Char('с') => {
                 // Create local playlist dialog
                 if self.view_mode == ViewMode::Playlists {
                     self.modal_input = Some(Vec::new());
                 }
             }
-            KeyCode::Char('i') if self.view_mode == ViewMode::Playlists => {
+            KeyCode::Char('i') | KeyCode::Char('I') | KeyCode::Char('ш') | KeyCode::Char('Ш') if self.view_mode == ViewMode::Playlists => {
                 self.modal_import_input = Some(Vec::new());
             }
-            KeyCode::Char('C') => {
+            KeyCode::Char('C') | KeyCode::Char('С') => {
                 // Edit cover artwork URL for playlist
                 let target_idx = match self.view_mode {
                     ViewMode::Playlists => {
@@ -1100,7 +1111,7 @@ impl App {
                 self.is_editing_search = true;
                 self.set_status("Search mode (type query and press Enter)");
             }
-            KeyCode::Up | KeyCode::Char('k') => match self.view_mode {
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') | KeyCode::Char('л') | KeyCode::Char('Л') => match self.view_mode {
                 ViewMode::Search => {
                     if self.search_cursor > 0 {
                         self.search_cursor -= 1;
@@ -1149,7 +1160,7 @@ impl App {
                     self.seek(-(self.store.config.seek_step as f64));
                 }
             },
-            KeyCode::Down | KeyCode::Char('j') => match self.view_mode {
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') | KeyCode::Char('о') | KeyCode::Char('О') => match self.view_mode {
                 ViewMode::Search => {
                     if !self.search_results.is_empty()
                         && self.search_cursor + 1 < self.search_results.len()
@@ -1244,8 +1255,20 @@ impl App {
             KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Char('в') | KeyCode::Char('В') => {
                 // Remove from queue or favorites or playlists
                 if self.view_mode == ViewMode::Queue && !self.queue.is_empty() {
-                    let removed = self.queue.remove(self.queue_cursor);
+                    let removed_idx = self.queue_cursor;
+                    let removed = self.queue.remove(removed_idx);
                     self.set_status(&format!("Removed from Queue: {}", removed.title));
+                    if let Some(cur) = self.current_track_idx {
+                        if cur == removed_idx {
+                            if self.queue.is_empty() {
+                                self.current_track_idx = None;
+                            } else if cur >= self.queue.len() {
+                                self.current_track_idx = Some(self.queue.len() - 1);
+                            }
+                        } else if cur > removed_idx {
+                            self.current_track_idx = Some(cur - 1);
+                        }
+                    }
                     if self.queue_cursor >= self.queue.len() && self.queue_cursor > 0 {
                         self.queue_cursor -= 1;
                     }
@@ -1275,7 +1298,7 @@ impl App {
                     }
                 }
             }
-            KeyCode::Left | KeyCode::Char('b') => {
+            KeyCode::Left | KeyCode::Char('b') | KeyCode::Char('B') | KeyCode::Char('и') | KeyCode::Char('И') => {
                 if self.view_mode == ViewMode::Settings {
                     if self.selected_settings_category.is_some() {
                         self.cycle_setting();
@@ -1284,7 +1307,7 @@ impl App {
                     self.seek(-(self.store.config.seek_step as f64));
                 }
             }
-            KeyCode::Right | KeyCode::Char('f') => {
+            KeyCode::Right | KeyCode::Char('f') | KeyCode::Char('а') => {
                 if self.view_mode == ViewMode::Settings {
                     if self.selected_settings_category.is_none() {
                         self.selected_settings_category = Some(self.settings_category_cursor);
@@ -1773,7 +1796,7 @@ impl App {
                     let likes_len = likes.len();
                     let pl_len = playlists.len();
                     for t in likes {
-                        if !self.store.is_liked(&t.url) {
+                        if !self.store.is_track_liked(&t) {
                             self.store.liked.push(t);
                         }
                     }
@@ -1896,7 +1919,11 @@ impl App {
         if !self.store.config.mouse_support || area.width < 30 || area.height < 8 {
             return;
         }
-        if self.modal_input.is_some() || self.modal_target_track.is_some() {
+        if self.modal_input.is_some()
+            || self.modal_target_track.is_some()
+            || self.modal_artwork_input.is_some()
+            || self.modal_import_input.is_some()
+        {
             return;
         }
 

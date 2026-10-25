@@ -58,7 +58,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                         break;
                     }
 
-                    if key.code == KeyCode::Char('q') && !app.is_editing_search && app.modal_input.is_none() && app.modal_target_track.is_none() {
+                    let in_any_modal_or_input = app.is_editing_search
+                        || app.modal_input.is_some()
+                        || app.modal_target_track.is_some()
+                        || app.modal_artwork_input.is_some()
+                        || app.modal_import_input.is_some();
+
+                    if (key.code == KeyCode::Char('q') || key.code == KeyCode::Char('й')) && !in_any_modal_or_input {
                         app.save_current_state();
                         break;
                     }
@@ -79,7 +85,15 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                         app.last_esc_press = Some(now);
 
-                        if app.is_editing_search {
+                        if app.modal_artwork_input.is_some() {
+                            app.modal_artwork_input = None;
+                        } else if app.modal_import_input.is_some() {
+                            app.modal_import_input = None;
+                        } else if app.modal_input.is_some() {
+                            app.modal_input = None;
+                        } else if app.modal_target_track.is_some() {
+                            app.modal_target_track = None;
+                        } else if app.is_editing_search {
                             app.is_editing_search = false;
                         } else if app.view_mode == app::ViewMode::PlaylistDetail {
                             app.view_mode = app::ViewMode::Playlists;

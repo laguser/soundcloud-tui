@@ -286,7 +286,7 @@ impl DiscordRpc {
         show_timestamps: bool,
     ) {
         if let Some(ref tx) = self.tx {
-            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
             let start = if show_timestamps && !is_paused && current_pos >= 0.0 {
                 Some(now.saturating_sub(current_pos as u64))
             } else {

@@ -234,9 +234,9 @@ fn render_tracks_list(
         let is_selected = idx == cursor;
         let is_playing = app
             .current_track()
-            .map(|t| t.url == track.url)
+            .map(|t| (!t.id.is_empty() && !track.id.is_empty() && t.id == track.id) || (!t.url.is_empty() && !track.url.is_empty() && t.url == track.url))
             .unwrap_or(false);
-        let is_liked = app.store.is_liked(&track.url);
+        let is_liked = app.store.is_track_liked(track);
 
         let cursor_glyph = if is_selected {
             match app.store.config.visual {
@@ -1227,7 +1227,7 @@ fn render_cover(f: &mut Frame, url: &str, area: Rect, accent: Color) {
     }
     let mut spawn = false;
     let lines_to_draw: Option<Vec<Line<'static>>> = {
-        let mut cache = cover_cache().lock().unwrap();
+        let mut cache = cover_cache().lock().unwrap_or_else(|e| e.into_inner());
         if !cache.contains_key(url) {
             cache.insert(url.to_string(), CoverState::Loading);
             spawn = true;
@@ -1278,7 +1278,7 @@ fn render_cover(f: &mut Frame, url: &str, area: Rect, accent: Color) {
                 .and_then(|o| image::load_from_memory(&o.stdout).ok())
                 .map(|img| img.to_rgb8());
 
-            let mut cache = cover_cache().lock().unwrap();
+            let mut cache = cover_cache().lock().unwrap_or_else(|e| e.into_inner());
             match res {
                 Some(img) => {
                     cache.insert(u, CoverState::Ready(CoverData {
@@ -1299,7 +1299,7 @@ fn render_cover(f: &mut Frame, url: &str, area: Rect, accent: Color) {
         f.render_widget(Paragraph::new(lines), area);
     } else {
         let is_failed = {
-            let cache = cover_cache().lock().unwrap();
+            let cache = cover_cache().lock().unwrap_or_else(|e| e.into_inner());
             matches!(cache.get(url), Some(CoverState::Failed))
         };
         let label = if is_failed { "No Cover" } else { "◌ Loading..." };

@@ -61,16 +61,11 @@ impl VisualStyle {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
 pub enum PitchMode {
+    #[default]
     Natural, // Pitch shifts naturally with speed (True Slowed / Nightcore)
     Keep,    // Time-stretch keeping original vocal pitch
-}
-
-impl Default for PitchMode {
-    fn default() -> Self {
-        PitchMode::Natural
-    }
 }
 
 impl PitchMode {
@@ -82,19 +77,14 @@ impl PitchMode {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
 pub enum AudioFilter {
+    #[default]
     None,
     BassBoost,
     NightcoreEq,
     VaporwaveReverb,
     SoftCompressor,
-}
-
-impl Default for AudioFilter {
-    fn default() -> Self {
-        AudioFilter::None
-    }
 }
 
 impl AudioFilter {
@@ -119,16 +109,11 @@ impl AudioFilter {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
 pub enum RpcActivityType {
+    #[default]
     Listening, // type 2 ("Listening to SoundCloud")
     Playing,   // type 0 ("Playing SoundCloud")
-}
-
-impl Default for RpcActivityType {
-    fn default() -> Self {
-        RpcActivityType::Listening
-    }
 }
 
 impl RpcActivityType {
@@ -441,7 +426,11 @@ impl DataStore {
     }
 
     pub fn add_history(&mut self, track: TrackItem) {
-        self.history.retain(|h| h.track.url != track.url);
+        self.history.retain(|h| {
+            let same_id = !h.track.id.is_empty() && !track.id.is_empty() && h.track.id == track.id;
+            let same_url = !h.track.url.is_empty() && !track.url.is_empty() && h.track.url == track.url;
+            !(same_id || same_url)
+        });
         self.history.insert(
             0,
             HistoryEntry {
@@ -478,7 +467,10 @@ impl DataStore {
     }
 
     pub fn toggle_like(&mut self, track: &TrackItem) -> bool {
-        if let Some(pos) = self.liked.iter().position(|t| t.url == track.url) {
+        if let Some(pos) = self.liked.iter().position(|t| {
+            (!t.id.is_empty() && !track.id.is_empty() && t.id == track.id)
+                || (!t.url.is_empty() && !track.url.is_empty() && t.url == track.url)
+        }) {
             self.liked.remove(pos);
             self.save();
             false
@@ -489,12 +481,24 @@ impl DataStore {
         }
     }
 
+    #[allow(dead_code)]
     pub fn is_liked(&self, url: &str) -> bool {
-        self.liked.iter().any(|t| t.url == url)
+        self.liked.iter().any(|t| (!url.is_empty() && t.url == url) || (!t.id.is_empty() && t.id == url))
+    }
+
+    pub fn is_track_liked(&self, track: &TrackItem) -> bool {
+        self.liked.iter().any(|t| {
+            (!t.id.is_empty() && !track.id.is_empty() && t.id == track.id)
+                || (!t.url.is_empty() && !track.url.is_empty() && t.url == track.url)
+        })
     }
 
     pub fn save_playlist(&mut self, playlist: PlaylistItem) {
-        self.playlists.retain(|p| p.url != playlist.url && p.id != playlist.id);
+        self.playlists.retain(|p| {
+            let same_id = !p.id.is_empty() && !playlist.id.is_empty() && p.id == playlist.id;
+            let same_url = !p.url.is_empty() && !playlist.url.is_empty() && p.url == playlist.url;
+            !(same_id || same_url)
+        });
         self.playlists.insert(0, playlist);
         self.save();
     }
@@ -526,7 +530,11 @@ impl DataStore {
 
     pub fn add_track_to_playlist(&mut self, playlist_idx: usize, track: TrackItem) -> bool {
         if let Some(pl) = self.playlists.get_mut(playlist_idx) {
-            if !pl.tracks.iter().any(|t| t.url == track.url) {
+            let exists = pl.tracks.iter().any(|t| {
+                (!t.id.is_empty() && !track.id.is_empty() && t.id == track.id)
+                    || (!t.url.is_empty() && !track.url.is_empty() && t.url == track.url)
+            });
+            if !exists {
                 pl.tracks.push(track);
                 pl.track_count = pl.tracks.len();
                 self.save();
@@ -612,5 +620,51 @@ mod tests {
         let updated = store.get_track_state("track_123").unwrap();
         assert_eq!(updated.position, 10.0);
         assert_eq!(updated.speed, 0.85);
+    }
+
+    #[test]
+    fn test_track_like_and_history_matching() {
+        let mut store = DataStore::default();
+        let track1 = TrackItem {
+            id: "sc_12345".to_string(),
+            title: "Test Track".to_string(),
+            artist: "Test Artist".to_string(),
+            duration: 180.0,
+            url: "https://soundcloud.com/test/track1".to_string(),
+            stream_url: None,
+            artwork_url: None,
+            waveform_url: None,
+            user_permalink: None,
+            user_id: None,
+        };
+
+        // Same ID but different or resolved URL (e.g. YouTube fallback or Spotify)
+        let track1_alt_url = TrackItem {
+            id: "sc_12345".to_string(),
+            title: "Test Track".to_string(),
+            artist: "Test Artist".to_string(),
+            duration: 180.0,
+            url: "https://youtube.com/watch?v=different".to_string(),
+            stream_url: None,
+            artwork_url: None,
+            waveform_url: None,
+            user_permalink: None,
+            user_id: None,
+        };
+
+        assert!(!store.is_track_liked(&track1));
+        assert!(store.toggle_like(&track1));
+        assert!(store.is_track_liked(&track1));
+        assert!(store.is_track_liked(&track1_alt_url));
+
+        // Toggling with alt url removes it because ID matches
+        assert!(!store.toggle_like(&track1_alt_url));
+        assert!(!store.is_track_liked(&track1));
+
+        // Test history deduplication with matching ID
+        store.add_history(track1.clone());
+        assert_eq!(store.history.len(), 1);
+        store.add_history(track1_alt_url);
+        assert_eq!(store.history.len(), 1);
     }
 }
