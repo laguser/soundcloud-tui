@@ -215,6 +215,13 @@ impl SearchEngine {
         out
     }
 
+    pub fn is_preview_url(url: &str) -> bool {
+        url.contains("/preview/")
+            || url.contains("cf-preview-media")
+            || url.contains("preview-media")
+            || url.contains("/preview_")
+    }
+
     pub fn resolve_youtube_direct(query_or_url: &str) -> Option<String> {
         let ytdl_out = Command::new("yt-dlp")
             .arg("-4")
@@ -229,7 +236,7 @@ impl SearchEngine {
 
         if ytdl_out.status.success() {
             let resolved = String::from_utf8_lossy(&ytdl_out.stdout).lines().next().unwrap_or("").trim().to_string();
-            if resolved.starts_with("http") {
+            if resolved.starts_with("http") && !Self::is_preview_url(&resolved) {
                 return Some(resolved);
             }
         }
@@ -290,7 +297,7 @@ impl SearchEngine {
             if stream_res.status.success() {
                 if let Ok(sv) = serde_json::from_slice::<serde_json::Value>(&stream_res.stdout) {
                     if let Some(direct_url) = sv.get("url").and_then(|u| u.as_str()) {
-                        if !direct_url.contains("cenc") && !direct_url.contains("drm") {
+                        if !direct_url.contains("cenc") && !direct_url.contains("drm") && !Self::is_preview_url(direct_url) {
                             // Quick stream accessibility verification (rejects CloudFront 403 Forbidden / errors)
                             let mut chk_cmd = Command::new("curl");
                             chk_cmd.arg("-s")
@@ -405,7 +412,7 @@ impl SearchEngine {
                     }
                 }
             } else if let Some(trans_url) = &track.stream_url {
-                if trans_url.starts_with("http") && !trans_url.contains("api-v2.soundcloud.com") && !trans_url.contains("cenc") && !trans_url.contains("encrypted") {
+                if trans_url.starts_with("http") && !trans_url.contains("api-v2.soundcloud.com") && !trans_url.contains("cenc") && !trans_url.contains("encrypted") && !Self::is_preview_url(trans_url) {
                     return Some(trans_url.clone());
                 }
             }
@@ -1873,6 +1880,7 @@ mod tests {
         assert!(stream2.is_some());
         let s2 = stream2.unwrap();
         assert!(s2.starts_with("http"));
+        assert!(!SearchEngine::is_preview_url(&s2));
 
         // 3. Алла Пугачева - Звездное Лето (SoundCloud native yt-dlp fallback)
         let track3 = TrackItem {

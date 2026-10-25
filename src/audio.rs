@@ -51,6 +51,8 @@ impl AudioPlayer {
             .arg("--vo=null")
             .arg("--msg-level=all=no")
             .arg("--no-ytdl")
+            .arg("--start=0")
+            .arg("--rebase-start-time=yes")
             .arg("--user-agent=Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
             .arg("--referrer=https://soundcloud.com/")
             .arg("--hls-bitrate=max")
