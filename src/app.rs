@@ -1294,7 +1294,7 @@ impl App {
     pub fn settings_category_len(cat: usize) -> usize {
         match cat {
             0 => 7, // Appearance & UI
-            1 => 6, // Audio & Speed Engine
+            1 => 7, // Audio & Speed Engine (7 items: volume, step, pitch, slowed, sped up, EQ, streaming mode)
             2 => 6, // Playback & Radio
             3 => 6, // Discord RPC & System
             4 => 4, // Storage & Maintenance
