@@ -668,14 +668,6 @@ fn render_settings_view(f: &mut Frame, app: &App, area: Rect) {
                     "disabled".to_string()
                 },
             ),
-            (
-                "resume position & speed",
-                if app.store.config.resume_playback {
-                    "remember per track".to_string()
-                } else {
-                    "always start at 0:00".to_string()
-                },
-            ),
             ("seek step (←/→)", format!("{} sec", app.store.config.seek_step)),
             (
                 "default shuffle on start",

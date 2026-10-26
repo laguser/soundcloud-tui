@@ -376,14 +376,19 @@ impl DataStore {
     pub fn load() -> Self {
         let path = Self::config_path();
         if let Ok(content) = fs::read_to_string(&path) {
-            if let Ok(data) = serde_json::from_str::<Self>(&content) {
+            if let Ok(mut data) = serde_json::from_str::<Self>(&content) {
+                // Ensure playback position is never resumed across runs and track_states are cleared
+                data.config.resume_playback = false;
+                data.track_states.clear();
                 data.save();
                 return data;
             }
         }
         let bak_path = path.with_extension("json.bak");
         if let Ok(content) = fs::read_to_string(&bak_path) {
-            if let Ok(data) = serde_json::from_str::<Self>(&content) {
+            if let Ok(mut data) = serde_json::from_str::<Self>(&content) {
+                data.config.resume_playback = false;
+                data.track_states.clear();
                 data.save();
                 return data;
             }
@@ -445,6 +450,7 @@ impl DataStore {
         self.save();
     }
 
+    #[allow(dead_code)]
     pub fn save_track_state(&mut self, track_id: &str, position: f64, speed: f64) {
         if track_id.is_empty() {
             return;
@@ -462,6 +468,7 @@ impl DataStore {
         self.save();
     }
 
+    #[allow(dead_code)]
     pub fn get_track_state(&self, track_id: &str) -> Option<&TrackPlaybackState> {
         self.track_states.get(track_id)
     }
