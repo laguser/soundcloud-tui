@@ -60,13 +60,13 @@ impl AudioPlayer {
             .arg("--demuxer-lavf-o=allowed_extensions=ALL")
             .arg("--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_delay_max=4")
             .arg("--network-timeout=10")
-            .arg("--demuxer-max-bytes=150M")
-            .arg("--demuxer-max-back-bytes=100M")
-            .arg("--demuxer-readahead-secs=300")
+            .arg("--demuxer-max-bytes=40M")
+            .arg("--demuxer-max-back-bytes=20M")
+            .arg("--demuxer-readahead-secs=2")
             .arg("--cache=yes")
-            .arg("--cache-secs=300")
+            .arg("--cache-secs=30")
             .arg("--cache-pause=no")
-            .arg("--stream-buffer-size=512k")
+            .arg("--stream-buffer-size=32k")
             .arg(format!("--input-ipc-server={}", ipc_path))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -272,6 +272,21 @@ impl AudioPlayer {
             "command": ["set_property", "af", filter_str]
         });
         if let Ok(msg) = serde_json::to_string(&cmd) {
+            self.send_command(&msg);
+        }
+    }
+
+    pub fn set_streaming_mode(&self, mode: crate::storage::StreamingBufferMode) {
+        let readahead = serde_json::json!({
+            "command": ["set_property", "demuxer-readahead-secs", mode.readahead_secs()]
+        });
+        if let Ok(msg) = serde_json::to_string(&readahead) {
+            self.send_command(&msg);
+        }
+        let buf = serde_json::json!({
+            "command": ["set_property", "stream-buffer-size", mode.stream_buffer_size()]
+        });
+        if let Ok(msg) = serde_json::to_string(&buf) {
             self.send_command(&msg);
         }
     }

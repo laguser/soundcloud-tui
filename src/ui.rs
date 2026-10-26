@@ -658,6 +658,7 @@ fn render_settings_view(f: &mut Frame, app: &App, area: Rect) {
             ("slowed preset (< / [)", format!("{:.2}x", app.store.config.slowed_preset)),
             ("sped up preset (> / ])", format!("{:.2}x", app.store.config.speedup_preset)),
             ("audio DSP filter (EQ)", app.store.config.audio_filter.name().to_string()),
+            ("streaming mode (buffer)", app.store.config.streaming_mode.name().to_string()),
         ],
         2 => vec![
             (

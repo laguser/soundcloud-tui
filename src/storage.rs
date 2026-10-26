@@ -132,6 +132,40 @@ impl RpcActivityType {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
+pub enum StreamingBufferMode {
+    #[default]
+    Realtime, // Low-latency direct playback (~2s buffer, instant startup)
+    Balanced, // Moderate buffer (~30s buffer, safe for mobile/LTE)
+    FullBuffer, // Heavy pre-cache (~300s buffer)
+}
+
+impl StreamingBufferMode {
+    pub fn name(&self) -> &'static str {
+        match self {
+            StreamingBufferMode::Realtime => "realtime / low-latency (fast start)",
+            StreamingBufferMode::Balanced => "balanced (~30s buffer)",
+            StreamingBufferMode::FullBuffer => "full buffer (~300s pre-cache)",
+        }
+    }
+
+    pub fn readahead_secs(&self) -> f64 {
+        match self {
+            StreamingBufferMode::Realtime => 2.0,
+            StreamingBufferMode::Balanced => 30.0,
+            StreamingBufferMode::FullBuffer => 300.0,
+        }
+    }
+
+    pub fn stream_buffer_size(&self) -> &'static str {
+        match self {
+            StreamingBufferMode::Realtime => "32k",
+            StreamingBufferMode::Balanced => "128k",
+            StreamingBufferMode::FullBuffer => "512k",
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct TrackItem {
     pub id: String,
@@ -199,6 +233,8 @@ pub struct Config {
     pub speed_step: f64,
     #[serde(default)]
     pub audio_filter: AudioFilter,
+    #[serde(default)]
+    pub streaming_mode: StreamingBufferMode,
 
     #[serde(default = "default_true")]
     pub auto_wave: bool,
@@ -295,6 +331,7 @@ impl Default for Config {
             speedup_preset: 1.25,
             speed_step: 0.05,
             audio_filter: AudioFilter::None,
+            streaming_mode: StreamingBufferMode::Realtime,
             auto_wave: true,
             resume_playback: false,
             seek_step: 5,

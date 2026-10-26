@@ -145,6 +145,7 @@ impl App {
         if store.config.audio_filter != AudioFilter::None {
             player.set_audio_filter(store.config.audio_filter.mpv_af());
         }
+        player.set_streaming_mode(store.config.streaming_mode);
         let default_shuffle = store.config.default_shuffle;
         let default_repeat = match store.config.default_repeat.as_str() {
             "all" => RepeatMode::All,
@@ -1408,6 +1409,15 @@ impl App {
                     AudioFilter::SoftCompressor => AudioFilter::None,
                 };
                 self.player.set_audio_filter(self.store.config.audio_filter.mpv_af());
+            }
+            (1, 6) => {
+                self.store.config.streaming_mode = match self.store.config.streaming_mode {
+                    crate::storage::StreamingBufferMode::Realtime => crate::storage::StreamingBufferMode::Balanced,
+                    crate::storage::StreamingBufferMode::Balanced => crate::storage::StreamingBufferMode::FullBuffer,
+                    crate::storage::StreamingBufferMode::FullBuffer => crate::storage::StreamingBufferMode::Realtime,
+                };
+                self.player.set_streaming_mode(self.store.config.streaming_mode);
+                self.set_status(&format!("Streaming mode: {}", self.store.config.streaming_mode.name()));
             }
 
             // 3. Playback & Radio
