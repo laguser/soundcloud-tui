@@ -1616,8 +1616,8 @@ impl App {
             }
         }
 
-        // Gapless background prefetch: when current track reaches 70% duration, prefetch next track into disk cache
-        if self.total_duration > 15.0 && (self.current_pos / self.total_duration) >= 0.70 {
+        // Gapless background prefetch: when current track reaches 40% duration, prefetch next track into disk cache
+        if self.total_duration > 10.0 && (self.current_pos / self.total_duration) >= 0.40 {
             if let Some(cur_idx) = self.current_track_idx {
                 if !self.queue.is_empty() {
                     if cur_idx + 1 < self.queue.len() {

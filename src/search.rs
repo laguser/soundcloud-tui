@@ -117,7 +117,9 @@ impl SearchEngine {
         let track_clone = track.clone();
         let holder = Arc::clone(client_id_holder);
         thread::spawn(move || {
-            let _ = Self::resolve_stream_url(&track_clone, &holder);
+            if let Some(stream_url) = Self::resolve_stream_url(&track_clone, &holder) {
+                Self::download_to_cache(&track_clone.id, &stream_url);
+            }
         });
     }
 
@@ -227,9 +229,12 @@ impl SearchEngine {
             .arg("-4")
             .arg("-g")
             .arg("-f")
-            .arg("bestaudio/best")
+            .arg("ba/b")
             .arg("--no-playlist")
             .arg("--no-warnings")
+            .arg("--no-check-certificates")
+            .arg("--extractor-args")
+            .arg("youtube:player_client=android")
             .arg(query_or_url)
             .output()
             .ok()?;
@@ -298,29 +303,7 @@ impl SearchEngine {
                 if let Ok(sv) = serde_json::from_slice::<serde_json::Value>(&stream_res.stdout) {
                     if let Some(direct_url) = sv.get("url").and_then(|u| u.as_str()) {
                         if !direct_url.contains("cenc") && !direct_url.contains("drm") && !Self::is_preview_url(direct_url) {
-                            // Quick stream accessibility verification (rejects CloudFront 403 Forbidden / errors)
-                            let mut chk_cmd = Command::new("curl");
-                            chk_cmd.arg("-s")
-                                .arg("-m")
-                                .arg("4")
-                                .arg("-H")
-                                .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
-                                .arg("-H")
-                                .arg("Referer: https://soundcloud.com/")
-                                .arg("-H")
-                                .arg("Origin: https://soundcloud.com");
-                            if !direct_url.contains(".m3u8") {
-                                chk_cmd.arg("-r").arg("0-64");
-                            }
-                            chk_cmd.arg(direct_url);
-                            if let Ok(chk) = chk_cmd.output() {
-                                if chk.status.success() && !chk.stdout.is_empty() {
-                                    let head = String::from_utf8_lossy(&chk.stdout[..chk.stdout.len().min(60)]);
-                                    if !head.contains("Forbidden") && !head.contains("<Error") {
-                                        return Some(direct_url.to_string());
-                                    }
-                                }
-                            }
+                            return Some(direct_url.to_string());
                         }
                     }
                 }
