@@ -312,12 +312,17 @@ impl SearchEngine {
         };
 
         for cid in candidate_cids {
-            // 1. If saved stream_url is a direct progressive MP3 transcoding, try it immediately
-            let is_progressive_trans = track.stream_url.as_ref().map(|u| {
-                u.contains("api-v2.soundcloud.com/media") && u.contains("progressive")
+            // 1. Ultra-fast direct transcoding resolution if stream_url is already present
+            let has_valid_unencrypted_trans = track.stream_url.as_ref().map(|u| {
+                u.contains("api-v2.soundcloud.com/media")
+                    && !u.contains("cbc")
+                    && !u.contains("cenc")
+                    && !u.contains("encrypted")
+                    && !u.contains("drm")
+                    && !Self::is_preview_url(u)
             }).unwrap_or(false);
 
-            if is_progressive_trans {
+            if has_valid_unencrypted_trans {
                 if let Some(trans_url) = track.stream_url.as_deref() {
                     if let Some(playable) = try_resolve(trans_url, cid, None) {
                         if let Ok(mut g) = client_id_holder.lock() {
@@ -325,6 +330,10 @@ impl SearchEngine {
                         }
                         return Some(playable);
                     }
+                }
+            } else if let Some(trans_url) = &track.stream_url {
+                if trans_url.starts_with("http") && !trans_url.contains("api-v2.soundcloud.com") && !trans_url.contains("cenc") && !trans_url.contains("encrypted") && !Self::is_preview_url(trans_url) {
+                    return Some(trans_url.clone());
                 }
             }
 
@@ -376,31 +385,7 @@ impl SearchEngine {
                 }
             }
 
-            // 3. Fallback to saved stream_url if present and unencrypted
-            let has_valid_unencrypted_trans = track.stream_url.as_ref().map(|u| {
-                u.contains("api-v2.soundcloud.com/media")
-                    && !u.contains("cbc")
-                    && !u.contains("cenc")
-                    && !u.contains("encrypted")
-                    && !u.contains("drm")
-            }).unwrap_or(false);
-
-            if has_valid_unencrypted_trans {
-                if let Some(trans_url) = track.stream_url.as_deref() {
-                    if let Some(playable) = try_resolve(trans_url, cid, None) {
-                        if let Ok(mut g) = client_id_holder.lock() {
-                            *g = Some(cid.to_string());
-                        }
-                        return Some(playable);
-                    }
-                }
-            } else if let Some(trans_url) = &track.stream_url {
-                if trans_url.starts_with("http") && !trans_url.contains("api-v2.soundcloud.com") && !trans_url.contains("cenc") && !trans_url.contains("encrypted") && !Self::is_preview_url(trans_url) {
-                    return Some(trans_url.clone());
-                }
-            }
-
-            // 4. Fallback to /resolve?url={track.url}&client_id={cid} only if track.id was empty
+            // 3. Fallback to /resolve?url={track.url}&client_id={cid} only if track.id was empty
             if track.id.is_empty() && !track.url.is_empty() && track.url.starts_with("http") && track.url.contains("soundcloud.com") {
                 let resolve_url = format!(
                     "https://api-v2.soundcloud.com/resolve?url={}&client_id={}",
@@ -1172,12 +1157,21 @@ impl SearchEngine {
                                         .and_then(|u| u.get("id"))
                                         .map(|i| i.to_string());
 
-                                    let transcoding_url = item
-                                        .get("media")
-                                        .and_then(|m| m.get("transcodings"))
-                                        .and_then(|t| t.as_array())
-                                        .and_then(|arr| Self::choose_best_transcoding(arr))
-                                        .map(|s| s.to_string());
+                                let auth = item.get("track_authorization").and_then(|a| a.as_str());
+                                let transcoding_url = item
+                                    .get("media")
+                                    .and_then(|m| m.get("transcodings"))
+                                    .and_then(|t| t.as_array())
+                                    .and_then(|arr| Self::choose_best_transcoding(arr))
+                                    .map(|s| {
+                                        if let Some(a) = auth {
+                                            if !a.is_empty() {
+                                                let sep = if s.contains('?') { "&" } else { "?" };
+                                                return format!("{}{sep}track_authorization={}", s, a);
+                                            }
+                                        }
+                                        s.to_string()
+                                    });
 
                                     if !url.is_empty() && !title.is_empty() {
                                         tracks.push(TrackItem {
@@ -1331,12 +1325,21 @@ impl SearchEngine {
                                 let user_permalink = item.get("user").and_then(|u| u.get("permalink")).and_then(|p| p.as_str()).map(|s| s.to_string());
                                 let user_id = item.get("user").and_then(|u| u.get("id")).map(|i| i.to_string());
 
+                                let auth = item.get("track_authorization").and_then(|a| a.as_str());
                                 let transcoding_url = item
                                     .get("media")
                                     .and_then(|m| m.get("transcodings"))
                                     .and_then(|t| t.as_array())
                                     .and_then(|arr| Self::choose_best_transcoding(arr))
-                                    .map(|s| s.to_string());
+                                    .map(|s| {
+                                        if let Some(a) = auth {
+                                            if !a.is_empty() {
+                                                let sep = if s.contains('?') { "&" } else { "?" };
+                                                return format!("{}{sep}track_authorization={}", s, a);
+                                            }
+                                        }
+                                        s.to_string()
+                                    });
 
                                 if !url.is_empty() && !title.is_empty() && !id.is_empty() {
                                     tracks.push(TrackItem {

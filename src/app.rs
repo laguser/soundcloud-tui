@@ -272,8 +272,7 @@ impl App {
         self.prefetched_track_id = None;
         self.player.ensure_running();
 
-        // Every track starts strictly from 0:00
-        self.current_speed = 1.0;
+        // Every track starts strictly from 0:00 (keep user's selected playback speed)
         self.current_pos = 0.0;
 
         // Update MPRIS2 for Caelestia Shell and system media keys immediately
