@@ -182,7 +182,7 @@ fn render_search_view(f: &mut Frame, app: &App, area: Rect) {
     let input_p = Paragraph::new(Line::from(input_spans));
     f.render_widget(input_p, search_layout[0]);
 
-    // Loading / Results
+    // Loading / Results / Suggestions
     if app.is_searching {
         let loading = Paragraph::new(Line::from(vec![
             Span::styled("⚡ ", Style::default().fg(accent)),
@@ -190,6 +190,39 @@ fn render_search_view(f: &mut Frame, app: &App, area: Rect) {
         ]))
         .alignment(Alignment::Center);
         f.render_widget(loading, search_layout[2]);
+        return;
+    }
+
+    // If typing in search bar or selecting suggestions, show matching suggestions
+    let suggestions = app.filtered_search_suggestions();
+    let show_suggestions = app.is_editing_search && !suggestions.is_empty();
+
+    if show_suggestions {
+        let mut lines = Vec::new();
+        lines.push(Line::from(vec![
+            Span::styled("  ◷ ", Style::default().fg(accent)),
+            Span::styled("Recent & Suggested Searches", Style::default().fg(Color::Rgb(140, 140, 140)).add_modifier(Modifier::BOLD)),
+            Span::styled("  •  ↓ / ↑ select  •  Tab complete  •  Enter search  •  d remove", Style::default().fg(Color::Rgb(70, 70, 70))),
+        ]));
+        lines.push(Line::from(""));
+
+        let max_items = (search_layout[2].height.saturating_sub(3) as usize).min(suggestions.len());
+        for (i, sug) in suggestions.iter().take(max_items).enumerate() {
+            let is_sel = app.is_selecting_suggestions && i == app.search_suggestion_cursor;
+            let prefix = if is_sel { "  ▸ " } else { "    " };
+            let style = if is_sel {
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Rgb(120, 120, 120))
+            };
+            lines.push(Line::from(vec![
+                Span::styled(prefix, Style::default().fg(if is_sel { accent } else { Color::Rgb(50, 50, 50) })),
+                Span::styled(sug, style),
+            ]));
+        }
+
+        let p = Paragraph::new(lines);
+        f.render_widget(p, search_layout[2]);
         return;
     }
 
@@ -316,7 +349,23 @@ fn render_queue_view(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    render_tracks_list(f, &app.queue, app.queue_cursor, accent, area, app);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Top hints
+            Constraint::Length(1), // Spacer
+            Constraint::Fill(1),   // Queue tracks
+        ])
+        .split(area);
+
+    let queue_info = Line::from(vec![
+        Span::styled("  ≡ ", Style::default().fg(accent).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("Playback Queue ({})", app.queue.len()), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled("  •  Enter play  •  Alt+k move up  •  Alt+j move down  •  d remove  •  q clear", Style::default().fg(Color::Rgb(95, 95, 95))),
+    ]);
+    f.render_widget(Paragraph::new(queue_info), chunks[0]);
+
+    render_tracks_list(f, &app.queue, app.queue_cursor, accent, chunks[2], app);
 }
 
 fn render_playlists_view(f: &mut Frame, app: &App, area: Rect) {

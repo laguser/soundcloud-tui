@@ -75,6 +75,8 @@ pub struct App {
     // Track lists & indices
     pub search_results: Vec<TrackItem>,
     pub search_cursor: usize,
+    pub search_suggestion_cursor: usize,
+    pub is_selecting_suggestions: bool,
 
     pub queue: Vec<TrackItem>,
     pub queue_cursor: usize,
@@ -166,6 +168,8 @@ impl App {
 
             search_results: Vec::new(),
             search_cursor: 0,
+            search_suggestion_cursor: 0,
+            is_selecting_suggestions: false,
 
             queue: Vec::new(),
             queue_cursor: 0,
@@ -435,6 +439,25 @@ impl App {
             ViewMode::Lyrics => {
                 self.toggle_pause();
             }
+        }
+    }
+
+    pub fn filtered_search_suggestions(&self) -> Vec<String> {
+        let current_input: String = self.query_chars.iter().collect();
+        let trimmed = current_input.trim().to_lowercase();
+        if trimmed.is_empty() {
+            // Show latest 10 queries from search history
+            self.store.search_history.iter().take(10).cloned().collect()
+        } else {
+            // Filter search history that contains the typed substring, then prioritize prefix matches
+            let mut matches: Vec<String> = self.store.search_history
+                .iter()
+                .filter(|h| h.to_lowercase().contains(&trimmed))
+                .take(10)
+                .cloned()
+                .collect();
+            matches.sort_by_key(|h| !h.to_lowercase().starts_with(&trimmed));
+            matches
         }
     }
 
@@ -763,6 +786,7 @@ impl App {
                     ViewMode::UserProfile => ViewMode::Search,
                     ViewMode::Settings => ViewMode::Search,
                 };
+                self.is_selecting_suggestions = false;
                 if self.view_mode != ViewMode::Search {
                     self.is_editing_search = false;
                 }
@@ -808,11 +832,15 @@ impl App {
                 KeyCode::Char(c) => {
                     self.query_chars.insert(self.input_cursor, c);
                     self.input_cursor += 1;
+                    self.is_selecting_suggestions = false;
+                    self.search_suggestion_cursor = 0;
                 }
                 KeyCode::Backspace => {
                     if self.input_cursor > 0 {
                         self.input_cursor -= 1;
                         self.query_chars.remove(self.input_cursor);
+                        self.is_selecting_suggestions = false;
+                        self.search_suggestion_cursor = 0;
                     }
                 }
                 KeyCode::Left => {
@@ -825,17 +853,72 @@ impl App {
                         self.input_cursor += 1;
                     }
                 }
-                KeyCode::Enter => {
-                    let query: String = self.query_chars.iter().collect();
-                    if !query.trim().is_empty() {
-                        self.is_searching = true;
-                        self.set_status(&format!("Searching for '{}'...", query.trim()));
-                        self.search_engine.search(&query);
-                        self.is_editing_search = false;
+                KeyCode::Up => {
+                    let suggestions = self.filtered_search_suggestions();
+                    if self.is_selecting_suggestions {
+                        if self.search_suggestion_cursor > 0 {
+                            self.search_suggestion_cursor -= 1;
+                        } else {
+                            self.is_selecting_suggestions = false;
+                        }
+                    } else if !suggestions.is_empty() {
+                        self.is_selecting_suggestions = true;
+                        self.search_suggestion_cursor = suggestions.len().saturating_sub(1);
                     }
                 }
                 KeyCode::Down => {
-                    self.is_editing_search = false;
+                    let suggestions = self.filtered_search_suggestions();
+                    if !suggestions.is_empty() {
+                        if !self.is_selecting_suggestions {
+                            self.is_selecting_suggestions = true;
+                            self.search_suggestion_cursor = 0;
+                        } else if self.search_suggestion_cursor + 1 < suggestions.len() {
+                            self.search_suggestion_cursor += 1;
+                        } else {
+                            // Leave suggestion list to track results
+                            self.is_selecting_suggestions = false;
+                            self.is_editing_search = false;
+                        }
+                    } else {
+                        self.is_editing_search = false;
+                    }
+                }
+                KeyCode::Tab => {
+                    // Autocomplete current query with selected suggestion
+                    let suggestions = self.filtered_search_suggestions();
+                    if !suggestions.is_empty() {
+                        let selected = if self.is_selecting_suggestions {
+                            suggestions.get(self.search_suggestion_cursor)
+                        } else {
+                            suggestions.first()
+                        };
+                        if let Some(sug) = selected {
+                            self.query_chars = sug.chars().collect();
+                            self.input_cursor = self.query_chars.len();
+                            self.is_selecting_suggestions = false;
+                            self.search_suggestion_cursor = 0;
+                            return;
+                        }
+                    }
+                }
+                KeyCode::Enter => {
+                    let suggestions = self.filtered_search_suggestions();
+                    let query = if self.is_selecting_suggestions && !suggestions.is_empty() {
+                        suggestions.get(self.search_suggestion_cursor).cloned().unwrap_or_else(|| self.query_chars.iter().collect())
+                    } else {
+                        self.query_chars.iter().collect()
+                    };
+                    let trimmed = query.trim().to_string();
+                    if !trimmed.is_empty() {
+                        self.query_chars = trimmed.chars().collect();
+                        self.input_cursor = self.query_chars.len();
+                        self.store.add_search_query(&trimmed);
+                        self.is_searching = true;
+                        self.is_selecting_suggestions = false;
+                        self.set_status(&format!("Searching for '{}'...", trimmed));
+                        self.search_engine.search(&trimmed);
+                        self.is_editing_search = false;
+                    }
                 }
                 _ => {}
             }
@@ -1073,6 +1156,51 @@ impl App {
                 self.is_editing_search = true;
                 self.set_status("Search mode (type query and press Enter)");
             }
+            KeyCode::Char('k') | KeyCode::Char('K') | KeyCode::Char('л') | KeyCode::Char('Л')
+                if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
+            {
+                if self.view_mode == ViewMode::Queue && !self.queue.is_empty() && self.queue_cursor > 0 {
+                    let from = self.queue_cursor;
+                    let to = from - 1;
+                    self.queue.swap(from, to);
+                    if let Some(cur) = self.current_track_idx {
+                        if cur == from {
+                            self.current_track_idx = Some(to);
+                        } else if cur == to {
+                            self.current_track_idx = Some(from);
+                        }
+                    }
+                    self.queue_cursor = to;
+                    self.set_status(&format!("Moved track up to #{}", to + 1));
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Char('J') | KeyCode::Char('о') | KeyCode::Char('О')
+                if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
+            {
+                if self.view_mode == ViewMode::Queue && !self.queue.is_empty() && self.queue_cursor + 1 < self.queue.len() {
+                    let from = self.queue_cursor;
+                    let to = from + 1;
+                    self.queue.swap(from, to);
+                    if let Some(cur) = self.current_track_idx {
+                        if cur == from {
+                            self.current_track_idx = Some(to);
+                        } else if cur == to {
+                            self.current_track_idx = Some(from);
+                        }
+                    }
+                    self.queue_cursor = to;
+                    self.set_status(&format!("Moved track down to #{}", to + 1));
+                }
+            }
+            KeyCode::Char('q') | KeyCode::Char('й') => {
+                // Clear queue if in Queue view
+                if self.view_mode == ViewMode::Queue && !self.queue.is_empty() {
+                    self.queue.clear();
+                    self.current_track_idx = None;
+                    self.queue_cursor = 0;
+                    self.set_status("Queue cleared");
+                }
+            }
             KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') | KeyCode::Char('л') | KeyCode::Char('Л') => match self.view_mode {
                 ViewMode::Search => {
                     if self.search_cursor > 0 {
@@ -1215,8 +1343,23 @@ impl App {
                 }
             }
             KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Char('в') | KeyCode::Char('В') => {
-                // Remove from queue or favorites or playlists
-                if self.view_mode == ViewMode::Queue && !self.queue.is_empty() {
+                // Remove from queue or favorites or playlists or search history
+                if self.view_mode == ViewMode::Search && self.is_selecting_suggestions {
+                    let suggestions = self.filtered_search_suggestions();
+                    if let Some(target) = suggestions.get(self.search_suggestion_cursor) {
+                        if let Some(pos) = self.store.search_history.iter().position(|h| h == target) {
+                            self.store.remove_search_query(pos);
+                            self.set_status(&format!("Removed query: {}", target));
+                            let new_len = self.filtered_search_suggestions().len();
+                            if self.search_suggestion_cursor >= new_len && self.search_suggestion_cursor > 0 {
+                                self.search_suggestion_cursor -= 1;
+                            }
+                            if new_len == 0 {
+                                self.is_selecting_suggestions = false;
+                            }
+                        }
+                    }
+                } else if self.view_mode == ViewMode::Queue && !self.queue.is_empty() {
                     let removed_idx = self.queue_cursor;
                     let removed = self.queue.remove(removed_idx);
                     self.set_status(&format!("Removed from Queue: {}", removed.title));

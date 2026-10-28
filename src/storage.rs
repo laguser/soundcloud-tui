@@ -375,6 +375,8 @@ pub struct DataStore {
     pub playlists: Vec<PlaylistItem>,
     #[serde(default)]
     pub track_states: std::collections::HashMap<String, TrackPlaybackState>,
+    #[serde(default)]
+    pub search_history: Vec<String>,
 }
 
 impl DataStore {
@@ -485,6 +487,26 @@ impl DataStore {
             self.history.truncate(max_hist);
         }
         self.save();
+    }
+
+    pub fn add_search_query(&mut self, query: &str) {
+        let q = query.trim().to_string();
+        if q.is_empty() {
+            return;
+        }
+        self.search_history.retain(|existing| !existing.eq_ignore_ascii_case(&q));
+        self.search_history.insert(0, q);
+        if self.search_history.len() > 100 {
+            self.search_history.truncate(100);
+        }
+        self.save();
+    }
+
+    pub fn remove_search_query(&mut self, index: usize) {
+        if index < self.search_history.len() {
+            self.search_history.remove(index);
+            self.save();
+        }
     }
 
     #[allow(dead_code)]
