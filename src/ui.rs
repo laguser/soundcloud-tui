@@ -57,6 +57,8 @@ pub fn render(f: &mut Frame, app: &App) {
         render_artwork_input_modal(f, app, chars);
     } else if let Some(target_track) = &app.modal_target_track {
         render_add_to_playlist_modal(f, app, target_track);
+    } else if app.show_help_modal {
+        render_help_modal(f, app);
     }
 }
 
@@ -104,6 +106,23 @@ fn render_top_bar(f: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::styled(
             format!("rep:{} ", app.repeat.name().to_lowercase()),
             Style::default().fg(accent),
+        ));
+    }
+
+    if app.store.config.audio_filter != crate::storage::AudioFilter::None {
+        spans.push(Span::styled("· ", Style::default().fg(Color::Rgb(50, 50, 50))));
+        spans.push(Span::styled(
+            format!("eq:{} ", app.store.config.audio_filter.name()),
+            Style::default().fg(accent),
+        ));
+    }
+
+    if app.list_filter_active || !app.list_filter_chars.is_empty() {
+        let q: String = app.list_filter_chars.iter().collect();
+        spans.push(Span::styled("· ", Style::default().fg(Color::Rgb(50, 50, 50))));
+        spans.push(Span::styled(
+            format!("filter: \"{}\" ", q),
+            Style::default().fg(Color::Rgb(255, 200, 80)).add_modifier(Modifier::BOLD),
         ));
     }
 
@@ -239,7 +258,8 @@ fn render_search_view(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    render_tracks_list(f, &app.search_results, app.search_cursor, accent, search_layout[2], app);
+    let tracks = app.get_active_list_tracks();
+    render_tracks_list(f, &tracks, app.search_cursor, accent, search_layout[2], app);
 }
 
 fn render_tracks_list(
@@ -365,7 +385,8 @@ fn render_queue_view(f: &mut Frame, app: &App, area: Rect) {
     ]);
     f.render_widget(Paragraph::new(queue_info), chunks[0]);
 
-    render_tracks_list(f, &app.queue, app.queue_cursor, accent, chunks[2], app);
+    let tracks = app.get_active_list_tracks();
+    render_tracks_list(f, &tracks, app.queue_cursor, accent, chunks[2], app);
 }
 
 fn render_playlists_view(f: &mut Frame, app: &App, area: Rect) {
@@ -557,7 +578,8 @@ fn render_playlist_detail_view(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    render_tracks_list(f, &playlist.tracks, app.playlist_detail_cursor, accent, chunks[2], app);
+    let tracks = app.get_active_list_tracks();
+    render_tracks_list(f, &tracks, app.playlist_detail_cursor, accent, chunks[2], app);
 }
 
 fn render_favorites_view(f: &mut Frame, app: &App, area: Rect) {
@@ -573,7 +595,8 @@ fn render_favorites_view(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    render_tracks_list(f, &app.store.liked, app.favorites_cursor, accent, area, app);
+    let tracks = app.get_active_list_tracks();
+    render_tracks_list(f, &tracks, app.favorites_cursor, accent, area, app);
 }
 
 fn render_history_view(f: &mut Frame, app: &App, area: Rect) {
@@ -588,7 +611,7 @@ fn render_history_view(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let tracks: Vec<_> = app.store.history.iter().map(|h| h.track.clone()).collect();
+    let tracks = app.get_active_list_tracks();
     render_tracks_list(f, &tracks, app.history_cursor, accent, area, app);
 }
 
@@ -1004,7 +1027,8 @@ fn render_user_profile_view(f: &mut Frame, app: &App, area: Rect) {
     ]));
     f.render_widget(header, chunks[0]);
 
-    render_tracks_list(f, &profile.tracks, app.user_profile_cursor, accent, chunks[2], app);
+    let tracks = app.get_active_list_tracks();
+    render_tracks_list(f, &tracks, app.user_profile_cursor, accent, chunks[2], app);
 }
 
 fn render_lyrics_view(f: &mut Frame, app: &App, area: Rect) {
@@ -1186,6 +1210,131 @@ fn render_add_to_playlist_modal(f: &mut Frame, app: &App, target_track: &crate::
     f.render_widget(p, inner);
 }
 
+fn render_help_modal(f: &mut Frame, app: &App) {
+    let size = f.area();
+    let accent = app.theme_accent();
+
+    let area = centered_rect(70, 75, size);
+    f.render_widget(ratatui::widgets::Clear, area);
+
+    let block = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(Style::default().fg(accent))
+        .title(Span::styled(" soundcloud-tui Keyboard Shortcuts (? to close) ", Style::default().fg(accent).add_modifier(Modifier::BOLD)));
+    f.render_widget(block, area);
+
+    let inner = area.inner(ratatui::layout::Margin { horizontal: 2, vertical: 1 });
+    let sec_style = Style::default().fg(accent).add_modifier(Modifier::BOLD);
+    let key_style = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
+    let desc_style = Style::default().fg(Color::Rgb(140, 140, 140));
+
+    let rows: Vec<Line> = vec![
+        Line::from(vec![Span::styled("── Navigation & Views ─────────────────────────────────", sec_style)]),
+        Line::from(vec![
+            Span::styled("  Tab / 1-7         ", key_style),
+            Span::styled("Switch views (Search, Queue, Playlists, Favs, History, Lyrics, Settings)", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  j / k  or  ↓ / ↑  ", key_style),
+            Span::styled("Navigate track list cursor up / down", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  /  or  i          ", key_style),
+            Span::styled("Open search bar (type track/artist/Spotify/SoundCloud link)", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  f                 ", key_style),
+            Span::styled("Filter tracks in current list on the fly (fuzzy search)", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  u                 ", key_style),
+            Span::styled("View author's SoundCloud profile and top tracks", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Esc               ", key_style),
+            Span::styled("Cancel search / exit modal / back (double Esc to quit)", desc_style),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled("── Playback, Speed & Audio Engine ─────────────────────", sec_style)]),
+        Line::from(vec![
+            Span::styled("  Enter             ", key_style),
+            Span::styled("Play selected track immediately", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Space             ", key_style),
+            Span::styled("Toggle Play / Pause", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  ← / →             ", key_style),
+            Span::styled("Seek backward / forward (configurable step in Settings)", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  n / p             ", key_style),
+            Span::styled("Next track / Previous track", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  < / >  or  [ / ]  ", key_style),
+            Span::styled("Slow down (0.80x) / Speed up (1.25x nightcore)", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  0  or  \\          ", key_style),
+            Span::styled("Reset playback speed to 1.00x normal", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  e                 ", key_style),
+            Span::styled("Cycle audio equalizer (BassBoost, Bass+Treble, EDM, Rock, Vocal, Nightcore, Lo-Fi, Norm)", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  + / -             ", key_style),
+            Span::styled("Volume up / down (10% step)", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  s / r             ", key_style),
+            Span::styled("Toggle Shuffle / Repeat mode (off / all / one)", desc_style),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled("── Tracks, Queue & Offline ────────────────────────────", sec_style)]),
+        Line::from(vec![
+            Span::styled("  x                 ", key_style),
+            Span::styled("Download selected track into ~/Music as clean .m4a/.mp3", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  l                 ", key_style),
+            Span::styled("Toggle favorite (Like / Unlike track)", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  a                 ", key_style),
+            Span::styled("Add track to playback queue", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  m                 ", key_style),
+            Span::styled("Add track to a custom playlist", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  w                 ", key_style),
+            Span::styled("Generate infinite Auto-Wave radio from current track", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  o                 ", key_style),
+            Span::styled("Copy clean track link to clipboard (wl-copy / xclip)", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Alt+k / Alt+j     ", key_style),
+            Span::styled("Move track up / down in Queue view", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  d                 ", key_style),
+            Span::styled("Remove item from Queue / Favorites / Playlists", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  q                 ", key_style),
+            Span::styled("Clear queue (in Queue view) / Quit application", desc_style),
+        ]),
+    ];
+
+    f.render_widget(Paragraph::new(rows), inner);
+}
+
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -1234,6 +1383,18 @@ fn render_bottom_bar(f: &mut Frame, _app: &App, area: Rect) {
         Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
         Span::styled("y ", Style::default().fg(Color::Rgb(120, 120, 120))),
         Span::styled("lyrics ", Style::default().fg(Color::Rgb(70, 70, 70))),
+        Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
+        Span::styled("f ", Style::default().fg(Color::Rgb(120, 120, 120))),
+        Span::styled("filter ", Style::default().fg(Color::Rgb(70, 70, 70))),
+        Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
+        Span::styled("e ", Style::default().fg(Color::Rgb(120, 120, 120))),
+        Span::styled("eq ", Style::default().fg(Color::Rgb(70, 70, 70))),
+        Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
+        Span::styled("x ", Style::default().fg(Color::Rgb(120, 120, 120))),
+        Span::styled("download ", Style::default().fg(Color::Rgb(70, 70, 70))),
+        Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
+        Span::styled("? ", Style::default().fg(Color::Rgb(120, 120, 120))),
+        Span::styled("help ", Style::default().fg(Color::Rgb(70, 70, 70))),
         Span::styled("· ", Style::default().fg(Color::Rgb(40, 40, 40))),
         Span::styled("q ", Style::default().fg(Color::Rgb(120, 120, 120))),
         Span::styled("quit", Style::default().fg(Color::Rgb(70, 70, 70))),

@@ -102,6 +102,11 @@ pub struct App {
     pub modal_playlist_cursor: usize,
     pub modal_artwork_input: Option<(usize, Vec<char>)>,
     pub modal_import_input: Option<Vec<char>>,
+    pub show_help_modal: bool,
+
+    // In-list quick filter (f key)
+    pub list_filter_active: bool,
+    pub list_filter_chars: Vec<char>,
 
     // Audio status & playback modes
     pub player: AudioPlayer,
@@ -193,6 +198,9 @@ impl App {
             modal_playlist_cursor: 0,
             modal_artwork_input: None,
             modal_import_input: None,
+            show_help_modal: false,
+            list_filter_active: false,
+            list_filter_chars: Vec::new(),
 
             player,
             search_engine: SearchEngine::new(store.config.client_id.clone()),
@@ -366,20 +374,73 @@ impl App {
         }
     }
 
+    pub fn get_active_list_tracks(&self) -> Vec<TrackItem> {
+        let raw = match self.view_mode {
+            ViewMode::Search => self.search_results.clone(),
+            ViewMode::Queue => self.queue.clone(),
+            ViewMode::Favorites => self.store.liked.clone(),
+            ViewMode::History => self.store.history.iter().map(|h| h.track.clone()).collect(),
+            ViewMode::PlaylistDetail => {
+                self.selected_playlist_idx
+                    .and_then(|idx| self.store.playlists.get(idx))
+                    .map(|p| p.tracks.clone())
+                    .unwrap_or_default()
+            }
+            ViewMode::UserProfile => {
+                self.current_user_profile
+                    .as_ref()
+                    .map(|p| p.tracks.clone())
+                    .unwrap_or_default()
+            }
+            _ => Vec::new(),
+        };
+
+        if !self.list_filter_chars.is_empty() {
+            let filter: String = self.list_filter_chars.iter().collect::<String>().to_lowercase();
+            raw.into_iter()
+                .filter(|t| {
+                    t.title.to_lowercase().contains(&filter)
+                        || t.artist.to_lowercase().contains(&filter)
+                })
+                .collect()
+        } else {
+            raw
+        }
+    }
+
     pub fn play_selected_in_current_view(&mut self) {
+        let active = self.get_active_list_tracks();
+        let cursor = match self.view_mode {
+            ViewMode::Search => self.search_cursor,
+            ViewMode::Queue => self.queue_cursor,
+            ViewMode::Favorites => self.favorites_cursor,
+            ViewMode::History => self.history_cursor,
+            ViewMode::PlaylistDetail => self.playlist_detail_cursor,
+            ViewMode::UserProfile => self.user_profile_cursor,
+            _ => 0,
+        };
+
         match self.view_mode {
-            ViewMode::Search => {
-                if !self.search_results.is_empty() && self.search_cursor < self.search_results.len() {
-                    self.queue = self.search_results.clone();
-                    self.current_track_idx = Some(self.search_cursor);
-                    let track = self.queue[self.search_cursor].clone();
+            ViewMode::Search | ViewMode::Favorites | ViewMode::History | ViewMode::PlaylistDetail | ViewMode::UserProfile => {
+                if !active.is_empty() && cursor < active.len() {
+                    let track = active[cursor].clone();
+                    if self.view_mode == ViewMode::Search && self.list_filter_chars.is_empty() {
+                        self.queue = self.search_results.clone();
+                    } else if !self.queue.iter().any(|t| t.id == track.id && !t.id.is_empty()) {
+                        self.queue.push(track.clone());
+                    }
+                    if let Some(pos) = self.queue.iter().position(|t| t.id == track.id && !t.id.is_empty()) {
+                        self.current_track_idx = Some(pos);
+                    }
                     self.play_track(track);
                 }
             }
             ViewMode::Queue => {
-                if !self.queue.is_empty() && self.queue_cursor < self.queue.len() {
-                    self.current_track_idx = Some(self.queue_cursor);
-                    let track = self.queue[self.queue_cursor].clone();
+                if !active.is_empty() && cursor < active.len() {
+                    let track = active[cursor].clone();
+                    if let Some(pos) = self.queue.iter().position(|t| t.id == track.id && !t.id.is_empty()) {
+                        self.current_track_idx = Some(pos);
+                    }
                     self.play_track(track);
                 }
             }
@@ -388,44 +449,6 @@ impl App {
                     self.selected_playlist_idx = Some(self.playlists_cursor);
                     self.playlist_detail_cursor = 0;
                     self.view_mode = ViewMode::PlaylistDetail;
-                }
-            }
-            ViewMode::PlaylistDetail => {
-                if let Some(idx) = self.selected_playlist_idx {
-                    if let Some(pl) = self.store.playlists.get(idx) {
-                        if !pl.tracks.is_empty() && self.playlist_detail_cursor < pl.tracks.len() {
-                            self.queue = pl.tracks.clone();
-                            self.current_track_idx = Some(self.playlist_detail_cursor);
-                            let track = self.queue[self.playlist_detail_cursor].clone();
-                            self.play_track(track);
-                        }
-                    }
-                }
-            }
-            ViewMode::UserProfile => {
-                if let Some(p) = &self.current_user_profile {
-                    if !p.tracks.is_empty() && self.user_profile_cursor < p.tracks.len() {
-                        self.queue = p.tracks.clone();
-                        self.current_track_idx = Some(self.user_profile_cursor);
-                        let track = self.queue[self.user_profile_cursor].clone();
-                        self.play_track(track);
-                    }
-                }
-            }
-            ViewMode::Favorites => {
-                if !self.store.liked.is_empty() && self.favorites_cursor < self.store.liked.len() {
-                    self.queue = self.store.liked.clone();
-                    self.current_track_idx = Some(self.favorites_cursor);
-                    let track = self.queue[self.favorites_cursor].clone();
-                    self.play_track(track);
-                }
-            }
-            ViewMode::History => {
-                if !self.store.history.is_empty() && self.history_cursor < self.store.history.len() {
-                    self.queue = self.store.history.iter().map(|e| e.track.clone()).collect();
-                    self.current_track_idx = Some(self.history_cursor);
-                    let track = self.queue[self.history_cursor].clone();
-                    self.play_track(track);
                 }
             }
             ViewMode::Settings => {
@@ -741,11 +764,12 @@ impl App {
             return;
         }
 
-        // Functional view switches: F1-F6
+        // Functional view switches: F1 (Help) or F2-F6
         match key.code {
             KeyCode::F(1) => {
-                self.view_mode = ViewMode::Search;
-                self.is_editing_search = true;
+                if !self.is_editing_search && !self.list_filter_active {
+                    self.show_help_modal = !self.show_help_modal;
+                }
                 return;
             }
             KeyCode::F(2) => {
@@ -787,12 +811,63 @@ impl App {
                     ViewMode::Settings => ViewMode::Search,
                 };
                 self.is_selecting_suggestions = false;
+                self.list_filter_active = false;
+                self.list_filter_chars.clear();
                 if self.view_mode != ViewMode::Search {
                     self.is_editing_search = false;
                 }
                 return;
             }
+            KeyCode::Char('?') if !self.is_editing_search && !self.list_filter_active => {
+                self.show_help_modal = !self.show_help_modal;
+                return;
+            }
             _ => {}
+        }
+
+        if self.show_help_modal {
+            if key.code == KeyCode::Esc || key.code == KeyCode::Char('?') || key.code == KeyCode::Char('q') || key.code == KeyCode::Enter {
+                self.show_help_modal = false;
+            }
+            return;
+        }
+
+        // List in-place filtering (f key mode)
+        if self.list_filter_active {
+            match key.code {
+                KeyCode::Esc => {
+                    self.list_filter_active = false;
+                    self.list_filter_chars.clear();
+                    self.set_status("Filter closed");
+                    return;
+                }
+                KeyCode::Enter => {
+                    self.list_filter_active = false;
+                    self.play_selected_in_current_view();
+                    return;
+                }
+                KeyCode::Backspace => {
+                    if !self.list_filter_chars.is_empty() {
+                        self.list_filter_chars.pop();
+                    } else {
+                        self.list_filter_active = false;
+                    }
+                    return;
+                }
+                KeyCode::Char(c) if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) && !key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
+                    self.list_filter_chars.push(c);
+                    return;
+                }
+                KeyCode::Up => {
+                    self.navigate_up();
+                    return;
+                }
+                KeyCode::Down => {
+                    self.navigate_down();
+                    return;
+                }
+                _ => {}
+            }
         }
 
         // Search edit mode vs navigation mode
@@ -1201,119 +1276,27 @@ impl App {
                     self.set_status("Queue cleared");
                 }
             }
-            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') | KeyCode::Char('л') | KeyCode::Char('Л') => match self.view_mode {
-                ViewMode::Search => {
-                    if self.search_cursor > 0 {
-                        self.search_cursor -= 1;
-                    }
-                }
-                ViewMode::Queue => {
-                    if self.queue_cursor > 0 {
-                        self.queue_cursor -= 1;
-                    }
-                }
-                ViewMode::Playlists => {
-                    if self.playlists_cursor > 0 {
-                        self.playlists_cursor -= 1;
-                    }
-                }
-                ViewMode::PlaylistDetail => {
-                    if self.playlist_detail_cursor > 0 {
-                        self.playlist_detail_cursor -= 1;
-                    }
-                }
-                ViewMode::UserProfile => {
-                    if self.user_profile_cursor > 0 {
-                        self.user_profile_cursor -= 1;
-                    }
-                }
-                ViewMode::Favorites => {
-                    if self.favorites_cursor > 0 {
-                        self.favorites_cursor -= 1;
-                    }
-                }
-                ViewMode::History => {
-                    if self.history_cursor > 0 {
-                        self.history_cursor -= 1;
-                    }
-                }
-                ViewMode::Settings => {
-                    if self.selected_settings_category.is_none() {
-                        if self.settings_category_cursor > 0 {
-                            self.settings_category_cursor -= 1;
-                        }
-                    } else if self.settings_cursor > 0 {
-                        self.settings_cursor -= 1;
-                    }
-                }
-                ViewMode::Lyrics => {
-                    self.seek(-(self.store.config.seek_step as f64));
-                }
-            },
-            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') | KeyCode::Char('о') | KeyCode::Char('О') => match self.view_mode {
-                ViewMode::Search => {
-                    if !self.search_results.is_empty()
-                        && self.search_cursor + 1 < self.search_results.len()
-                    {
-                        self.search_cursor += 1;
-                    }
-                }
-                ViewMode::Queue => {
-                    if !self.queue.is_empty() && self.queue_cursor + 1 < self.queue.len() {
-                        self.queue_cursor += 1;
-                    }
-                }
-                ViewMode::Playlists => {
-                    if !self.store.playlists.is_empty()
-                        && self.playlists_cursor + 1 < self.store.playlists.len()
-                    {
-                        self.playlists_cursor += 1;
-                    }
-                }
-                ViewMode::PlaylistDetail => {
-                    if let Some(idx) = self.selected_playlist_idx {
-                        if let Some(pl) = self.store.playlists.get(idx) {
-                            if !pl.tracks.is_empty() && self.playlist_detail_cursor + 1 < pl.tracks.len() {
-                                self.playlist_detail_cursor += 1;
-                            }
-                        }
-                    }
-                }
-                ViewMode::UserProfile => {
-                    if let Some(p) = &self.current_user_profile {
-                        if !p.tracks.is_empty() && self.user_profile_cursor + 1 < p.tracks.len() {
-                            self.user_profile_cursor += 1;
-                        }
-                    }
-                }
-                ViewMode::Favorites => {
-                    if !self.store.liked.is_empty()
-                        && self.favorites_cursor + 1 < self.store.liked.len()
-                    {
-                        self.favorites_cursor += 1;
-                    }
-                }
-                ViewMode::History => {
-                    if !self.store.history.is_empty()
-                        && self.history_cursor + 1 < self.store.history.len()
-                    {
-                        self.history_cursor += 1;
-                    }
-                }
-                ViewMode::Settings => {
-                    if let Some(cat) = self.selected_settings_category {
-                        let max_items = Self::settings_category_len(cat);
-                        if self.settings_cursor + 1 < max_items {
-                            self.settings_cursor += 1;
-                        }
-                    } else if self.settings_category_cursor + 1 < 5 {
-                        self.settings_category_cursor += 1;
-                    }
-                }
-                ViewMode::Lyrics => {
-                    self.seek(self.store.config.seek_step as f64);
-                }
-            },
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') | KeyCode::Char('л') | KeyCode::Char('Л') => {
+                self.navigate_up();
+            }
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') | KeyCode::Char('о') | KeyCode::Char('О') => {
+                self.navigate_down();
+            }
+            KeyCode::Char('f') | KeyCode::Char('а')
+                if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+                    && self.view_mode != ViewMode::Settings
+                    && self.view_mode != ViewMode::Lyrics =>
+            {
+                self.list_filter_active = true;
+                self.list_filter_chars.clear();
+                self.set_status("Filter tracks: type name/artist (Enter to play, Esc to cancel)");
+            }
+            KeyCode::Char('e') | KeyCode::Char('E') | KeyCode::Char('у') | KeyCode::Char('У') => {
+                self.cycle_audio_equalizer();
+            }
+            KeyCode::Char('x') | KeyCode::Char('X') | KeyCode::Char('ч') | KeyCode::Char('Ч') => {
+                self.download_selected_track();
+            }
             KeyCode::Enter => {
                 self.play_selected_in_current_view();
             },
@@ -1412,7 +1395,7 @@ impl App {
                     self.seek(-(self.store.config.seek_step as f64));
                 }
             }
-            KeyCode::Right | KeyCode::Char('f') | KeyCode::Char('а') => {
+            KeyCode::Right => {
                 if self.view_mode == ViewMode::Settings {
                     if self.selected_settings_category.is_none() {
                         self.selected_settings_category = Some(self.settings_category_cursor);
@@ -1432,6 +1415,152 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    pub fn navigate_up(&mut self) {
+        match self.view_mode {
+            ViewMode::Search => {
+                if self.search_cursor > 0 {
+                    self.search_cursor -= 1;
+                }
+            }
+            ViewMode::Queue => {
+                if self.queue_cursor > 0 {
+                    self.queue_cursor -= 1;
+                }
+            }
+            ViewMode::Playlists => {
+                if self.playlists_cursor > 0 {
+                    self.playlists_cursor -= 1;
+                }
+            }
+            ViewMode::PlaylistDetail => {
+                if self.playlist_detail_cursor > 0 {
+                    self.playlist_detail_cursor -= 1;
+                }
+            }
+            ViewMode::UserProfile => {
+                if self.user_profile_cursor > 0 {
+                    self.user_profile_cursor -= 1;
+                }
+            }
+            ViewMode::Favorites => {
+                if self.favorites_cursor > 0 {
+                    self.favorites_cursor -= 1;
+                }
+            }
+            ViewMode::History => {
+                if self.history_cursor > 0 {
+                    self.history_cursor -= 1;
+                }
+            }
+            ViewMode::Settings => {
+                if self.selected_settings_category.is_none() {
+                    if self.settings_category_cursor > 0 {
+                        self.settings_category_cursor -= 1;
+                    }
+                } else if self.settings_cursor > 0 {
+                    self.settings_cursor -= 1;
+                }
+            }
+            ViewMode::Lyrics => {
+                self.seek(-(self.store.config.seek_step as f64));
+            }
+        }
+    }
+
+    pub fn navigate_down(&mut self) {
+        let active_len = self.get_active_list_tracks().len();
+        match self.view_mode {
+            ViewMode::Search => {
+                if active_len > 0 && self.search_cursor + 1 < active_len {
+                    self.search_cursor += 1;
+                }
+            }
+            ViewMode::Queue => {
+                if active_len > 0 && self.queue_cursor + 1 < active_len {
+                    self.queue_cursor += 1;
+                }
+            }
+            ViewMode::Playlists => {
+                if !self.store.playlists.is_empty() && self.playlists_cursor + 1 < self.store.playlists.len() {
+                    self.playlists_cursor += 1;
+                }
+            }
+            ViewMode::PlaylistDetail => {
+                if active_len > 0 && self.playlist_detail_cursor + 1 < active_len {
+                    self.playlist_detail_cursor += 1;
+                }
+            }
+            ViewMode::UserProfile => {
+                if active_len > 0 && self.user_profile_cursor + 1 < active_len {
+                    self.user_profile_cursor += 1;
+                }
+            }
+            ViewMode::Favorites => {
+                if active_len > 0 && self.favorites_cursor + 1 < active_len {
+                    self.favorites_cursor += 1;
+                }
+            }
+            ViewMode::History => {
+                if active_len > 0 && self.history_cursor + 1 < active_len {
+                    self.history_cursor += 1;
+                }
+            }
+            ViewMode::Settings => {
+                if let Some(cat) = self.selected_settings_category {
+                    let max_items = Self::settings_category_len(cat);
+                    if self.settings_cursor + 1 < max_items {
+                        self.settings_cursor += 1;
+                    }
+                } else if self.settings_category_cursor + 1 < 5 {
+                    self.settings_category_cursor += 1;
+                }
+            }
+            ViewMode::Lyrics => {
+                self.seek(self.store.config.seek_step as f64);
+            }
+        }
+    }
+
+    pub fn download_selected_track(&mut self) {
+        let Some(track) = self.selected_or_current_track() else {
+            self.set_status("No track selected to download");
+            return;
+        };
+
+        let title = track.title.clone();
+        let cid_holder = std::sync::Arc::clone(&self.search_engine.cached_client_id);
+        self.set_status(&format!("Downloading to ~/Music: {}...", title));
+
+        std::thread::spawn(move || {
+            match crate::search::SearchEngine::download_track_to_music(&track, &cid_holder) {
+                Ok(path) => {
+                    let fname = path.file_name().and_then(|f| f.to_str()).unwrap_or("track");
+                    eprintln!("[download] Successfully saved: {}", fname);
+                }
+                Err(err) => {
+                    eprintln!("[download] Error saving {}: {}", title, err);
+                }
+            }
+        });
+    }
+
+    pub fn cycle_audio_equalizer(&mut self) {
+        self.store.config.audio_filter = match self.store.config.audio_filter {
+            crate::storage::AudioFilter::None => crate::storage::AudioFilter::BassBoost,
+            crate::storage::AudioFilter::BassBoost => crate::storage::AudioFilter::BassTreble,
+            crate::storage::AudioFilter::BassTreble => crate::storage::AudioFilter::Electronic,
+            crate::storage::AudioFilter::Electronic => crate::storage::AudioFilter::RockMetal,
+            crate::storage::AudioFilter::RockMetal => crate::storage::AudioFilter::VocalClarity,
+            crate::storage::AudioFilter::VocalClarity => crate::storage::AudioFilter::NightcoreEq,
+            crate::storage::AudioFilter::NightcoreEq => crate::storage::AudioFilter::VaporwaveReverb,
+            crate::storage::AudioFilter::VaporwaveReverb => crate::storage::AudioFilter::SoftCompressor,
+            crate::storage::AudioFilter::SoftCompressor => crate::storage::AudioFilter::None,
+        };
+        self.player.set_audio_filter(self.store.config.audio_filter.mpv_af());
+        self.store.save();
+        self.set_status(&format!("EQ Preset: {}", self.store.config.audio_filter.name()));
     }
 
     pub fn settings_category_len(cat: usize) -> usize {
@@ -1546,7 +1675,11 @@ impl App {
             (1, 5) => {
                 self.store.config.audio_filter = match self.store.config.audio_filter {
                     AudioFilter::None => AudioFilter::BassBoost,
-                    AudioFilter::BassBoost => AudioFilter::NightcoreEq,
+                    AudioFilter::BassBoost => AudioFilter::BassTreble,
+                    AudioFilter::BassTreble => AudioFilter::Electronic,
+                    AudioFilter::Electronic => AudioFilter::RockMetal,
+                    AudioFilter::RockMetal => AudioFilter::VocalClarity,
+                    AudioFilter::VocalClarity => AudioFilter::NightcoreEq,
                     AudioFilter::NightcoreEq => AudioFilter::VaporwaveReverb,
                     AudioFilter::VaporwaveReverb => AudioFilter::SoftCompressor,
                     AudioFilter::SoftCompressor => AudioFilter::None,

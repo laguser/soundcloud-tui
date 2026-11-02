@@ -82,6 +82,10 @@ pub enum AudioFilter {
     #[default]
     None,
     BassBoost,
+    BassTreble,
+    Electronic,
+    RockMetal,
+    VocalClarity,
     NightcoreEq,
     VaporwaveReverb,
     SoftCompressor,
@@ -92,6 +96,10 @@ impl AudioFilter {
         match self {
             AudioFilter::None => "off (flat)",
             AudioFilter::BassBoost => "bass boost (+6dB sub)",
+            AudioFilter::BassTreble => "bass + treble (punchy)",
+            AudioFilter::Electronic => "club / EDM (deep sub + crisp highs)",
+            AudioFilter::RockMetal => "rock / metal (mid-scoop)",
+            AudioFilter::VocalClarity => "vocal boost (+4dB mids)",
             AudioFilter::NightcoreEq => "bright (treble boost)",
             AudioFilter::VaporwaveReverb => "muffled lo-fi (lowpass)",
             AudioFilter::SoftCompressor => "dynamic normalizer",
@@ -102,6 +110,10 @@ impl AudioFilter {
         match self {
             AudioFilter::None => "",
             AudioFilter::BassBoost => "lavfi=[bass=g=6:f=110:w=0.6]",
+            AudioFilter::BassTreble => "lavfi=[bass=g=5:f=120:w=0.5,treble=g=5:f=4000]",
+            AudioFilter::Electronic => "lavfi=[bass=g=7:f=90:w=0.7,treble=g=6:f=5000,equalizer=f=1000:t=q:w=1:g=-2]",
+            AudioFilter::RockMetal => "lavfi=[bass=g=4:f=100:w=0.5,equalizer=f=1000:t=q:w=1:g=-3,treble=g=4:f=3500]",
+            AudioFilter::VocalClarity => "lavfi=[equalizer=f=2500:t=q:w=1:g=4,bass=g=-2:f=100:w=0.5]",
             AudioFilter::NightcoreEq => "lavfi=[treble=g=5:f=3500]",
             AudioFilter::VaporwaveReverb => "lavfi=[lowpass=f=3200]",
             AudioFilter::SoftCompressor => "lavfi=[dynaudnorm=f=150:g=15]",
@@ -394,6 +406,17 @@ impl DataStore {
         path.push("tracks");
         fs::create_dir_all(&path).ok();
         path
+    }
+
+    pub fn music_dir() -> PathBuf {
+        if let Some(p) = dirs::audio_dir() {
+            fs::create_dir_all(&p).ok();
+            return p;
+        }
+        let mut home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        home.push("Music");
+        fs::create_dir_all(&home).ok();
+        home
     }
 
     pub fn get_cached_track_path(id: &str) -> Option<PathBuf> {

@@ -59,6 +59,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
 
                     let in_any_modal_or_input = app.is_editing_search
+                        || app.list_filter_active
+                        || app.show_help_modal
                         || app.modal_input.is_some()
                         || app.modal_target_track.is_some()
                         || app.modal_artwork_input.is_some()
@@ -85,7 +87,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                         app.last_esc_press = Some(now);
 
-                        if app.modal_artwork_input.is_some() {
+                        if app.show_help_modal {
+                            app.show_help_modal = false;
+                        } else if app.list_filter_active {
+                            app.list_filter_active = false;
+                            app.list_filter_chars.clear();
+                        } else if app.modal_artwork_input.is_some() {
                             app.modal_artwork_input = None;
                         } else if app.modal_import_input.is_some() {
                             app.modal_import_input = None;

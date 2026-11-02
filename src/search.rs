@@ -453,6 +453,101 @@ impl SearchEngine {
         None
     }
 
+    pub fn download_track_to_music(
+        track: &TrackItem,
+        client_id_holder: &Arc<Mutex<Option<String>>>,
+    ) -> Result<std::path::PathBuf, String> {
+        let music_dir = crate::storage::DataStore::music_dir();
+        let sanitize = |s: &str| -> String {
+            s.chars()
+                .map(|c| if c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|' { '_' } else { c })
+                .collect::<String>()
+                .trim()
+                .to_string()
+        };
+
+        let artist_clean = sanitize(if track.artist.is_empty() { "Unknown Artist" } else { &track.artist });
+        let title_clean = sanitize(if track.title.is_empty() { "Untitled Track" } else { &track.title });
+        let base_filename = format!("{} - {}", artist_clean, title_clean);
+
+        // 1. Check if we already have it in cache
+        if let Some(cached) = crate::storage::DataStore::get_cached_track_path(&track.id) {
+            let ext = cached.extension().and_then(|e| e.to_str()).unwrap_or("m4a");
+            let target_path = music_dir.join(format!("{}.{}", base_filename, ext));
+            if let Ok(_) = std::fs::copy(&cached, &target_path) {
+                return Ok(target_path);
+            }
+        }
+
+        // 2. Resolve stream URL
+        let stream_url = Self::resolve_stream_url(track, client_id_holder)
+            .ok_or_else(|| "Could not resolve audio stream URL for download".to_string())?;
+
+        let is_hls = stream_url.contains(".m3u8") || stream_url.contains("stream/hls");
+        let ext = if is_hls { "m4a" } else { "mp3" };
+        let target_path = music_dir.join(format!("{}.{}", base_filename, ext));
+        let tmp_path = music_dir.join(format!("{}.{}.tmp", base_filename, ext));
+
+        if is_hls {
+            let status = Command::new("ffmpeg")
+                .arg("-y")
+                .arg("-v")
+                .arg("error")
+                .arg("-allowed_extensions")
+                .arg("ALL")
+                .arg("-headers")
+                .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0\r\n")
+                .arg("-i")
+                .arg(&stream_url)
+                .arg("-c")
+                .arg("copy")
+                .arg("-metadata")
+                .arg(format!("title={}", track.title))
+                .arg("-metadata")
+                .arg(format!("artist={}", track.artist))
+                .arg("-f")
+                .arg("ipod")
+                .arg(&tmp_path)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map_err(|e| format!("ffmpeg execution failed: {}", e))?;
+
+            if status.success() && tmp_path.exists() && std::fs::metadata(&tmp_path).map(|m| m.len() > 100 * 1024).unwrap_or(false) {
+                let _ = std::fs::rename(&tmp_path, &target_path);
+                return Ok(target_path);
+            } else {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err("Failed to download stream via ffmpeg".to_string());
+            }
+        } else {
+            let status = Command::new("curl")
+                .arg("-s")
+                .arg("-L")
+                .arg("-m")
+                .arg("180")
+                .arg("-H")
+                .arg("User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")
+                .arg(&stream_url)
+                .arg("-o")
+                .arg(&tmp_path)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map_err(|e| format!("curl execution failed: {}", e))?;
+
+            if status.success() && tmp_path.exists() && std::fs::metadata(&tmp_path).map(|m| m.len() > 100 * 1024).unwrap_or(false) {
+                let _ = std::fs::rename(&tmp_path, &target_path);
+                return Ok(target_path);
+            } else {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err("Failed to download stream via curl".to_string());
+            }
+        }
+    }
+
     #[allow(dead_code)]
     fn download_to_cache(track_id: &str, stream_url: &str) {
         if track_id.is_empty()
