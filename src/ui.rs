@@ -632,9 +632,9 @@ fn render_settings_view(f: &mut Frame, app: &App, area: Rect) {
 
     let categories = [
         ("1. Appearance & UI", "theme · player style · bar width · top/bottom bars · icons", 7usize),
-        ("2. Audio & Speed Engine", "volume · pitch mode · slowed/sped-up presets · DSP filter", 6usize),
-        ("3. Playback & Radio", "auto-wave · resume pos · seek step · shuffle · repeat · mouse", 6usize),
-        ("4. Discord RPC & System", "rich presence · activity type · button · timestamps · MPRIS", 6usize),
+        ("2. Audio & Speed Engine", "volume · pitch mode · slowed/sped-up presets · DSP filter · streaming mode", 7usize),
+        ("3. Playback & Radio", "auto-wave · resume pos · seek step · shuffle · repeat · mouse", 5usize),
+        ("4. Discord RPC & System", "rich presence · activity type · button · timestamps · MPRIS · lyrics", 6usize),
         ("5. Storage & Maintenance", "gapless disk prefetch · history limit · clear cache/history", 4usize),
     ];
 

@@ -474,7 +474,7 @@ impl SearchEngine {
         if let Some(cached) = crate::storage::DataStore::get_cached_track_path(&track.id) {
             let ext = cached.extension().and_then(|e| e.to_str()).unwrap_or("m4a");
             let target_path = music_dir.join(format!("{}.{}", base_filename, ext));
-            if let Ok(_) = std::fs::copy(&cached, &target_path) {
+            if std::fs::copy(&cached, &target_path).is_ok() {
                 return Ok(target_path);
             }
         }
@@ -516,10 +516,10 @@ impl SearchEngine {
 
             if status.success() && tmp_path.exists() && std::fs::metadata(&tmp_path).map(|m| m.len() > 100 * 1024).unwrap_or(false) {
                 let _ = std::fs::rename(&tmp_path, &target_path);
-                return Ok(target_path);
+                Ok(target_path)
             } else {
                 let _ = std::fs::remove_file(&tmp_path);
-                return Err("Failed to download stream via ffmpeg".to_string());
+                Err("Failed to download stream via ffmpeg".to_string())
             }
         } else {
             let status = Command::new("curl")
@@ -540,10 +540,10 @@ impl SearchEngine {
 
             if status.success() && tmp_path.exists() && std::fs::metadata(&tmp_path).map(|m| m.len() > 100 * 1024).unwrap_or(false) {
                 let _ = std::fs::rename(&tmp_path, &target_path);
-                return Ok(target_path);
+                Ok(target_path)
             } else {
                 let _ = std::fs::remove_file(&tmp_path);
-                return Err("Failed to download stream via curl".to_string());
+                Err("Failed to download stream via curl".to_string())
             }
         }
     }

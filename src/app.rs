@@ -1137,16 +1137,7 @@ impl App {
             }
             KeyCode::Char('u') | KeyCode::Char('U') | KeyCode::Char('г') | KeyCode::Char('Г') => {
                 // View profile of artist for current/highlighted track
-                let track = match self.view_mode {
-                    ViewMode::Search => self.search_results.get(self.search_cursor).cloned(),
-                    ViewMode::Queue => self.queue.get(self.queue_cursor).cloned(),
-                    ViewMode::Favorites => self.store.liked.get(self.favorites_cursor).cloned(),
-                    ViewMode::History => self.store.history.get(self.history_cursor).map(|h| h.track.clone()),
-                    ViewMode::PlaylistDetail => {
-                        self.selected_playlist_idx.and_then(|i| self.store.playlists.get(i)).and_then(|p| p.tracks.get(self.playlist_detail_cursor).cloned())
-                    }
-                    _ => self.current_track().cloned(),
-                };
+                let track = self.selected_or_current_track();
                 if let Some(t) = track {
                     let query = t.user_permalink.as_deref().or(t.user_id.as_deref()).unwrap_or(&t.artist);
                     self.set_status(&format!("Loading profile of '{}'...", t.artist));
@@ -1185,16 +1176,7 @@ impl App {
             }
             KeyCode::Char('m') | KeyCode::Char('M') | KeyCode::Char('ь') | KeyCode::Char('Ь') => {
                 // Add highlighted track to one of saved playlists
-                let track = match self.view_mode {
-                    ViewMode::Search => self.search_results.get(self.search_cursor).cloned(),
-                    ViewMode::Queue => self.queue.get(self.queue_cursor).cloned(),
-                    ViewMode::Favorites => self.store.liked.get(self.favorites_cursor).cloned(),
-                    ViewMode::History => self.store.history.get(self.history_cursor).map(|h| h.track.clone()),
-                    ViewMode::UserProfile => {
-                        self.current_user_profile.as_ref().and_then(|p| p.tracks.get(self.user_profile_cursor).cloned())
-                    }
-                    _ => self.current_track().cloned(),
-                };
+                let track = self.selected_or_current_track();
                 if let Some(t) = track {
                     if self.store.playlists.is_empty() {
                         self.set_status("No playlists yet. Press 'c' in Playlists view to create one");
@@ -1302,24 +1284,7 @@ impl App {
             },
             KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Char('ф') | KeyCode::Char('Ф') => {
                 // Add to queue
-                let track = match self.view_mode {
-                    ViewMode::Search => self.search_results.get(self.search_cursor).cloned(),
-                    ViewMode::Favorites => self.store.liked.get(self.favorites_cursor).cloned(),
-                    ViewMode::History => {
-                        self.store.history.get(self.history_cursor).map(|h| h.track.clone())
-                    }
-                    ViewMode::UserProfile => {
-                        self.current_user_profile.as_ref().and_then(|p| p.tracks.get(self.user_profile_cursor).cloned())
-                    }
-                    ViewMode::PlaylistDetail => {
-                        if let Some(idx) = self.selected_playlist_idx {
-                            self.store.playlists.get(idx).and_then(|p| p.tracks.get(self.playlist_detail_cursor).cloned())
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                };
+                let track = self.selected_or_current_track();
                 if let Some(t) = track {
                     self.set_status(&format!("Added to Queue: {}", t.title));
                     self.queue.push(t);
@@ -2079,20 +2044,20 @@ impl App {
     }
 
     pub fn selected_or_current_track(&self) -> Option<TrackItem> {
-        let from_view = match self.view_mode {
-            ViewMode::Search => self.search_results.get(self.search_cursor).cloned(),
-            ViewMode::Queue => self.queue.get(self.queue_cursor).cloned(),
-            ViewMode::Favorites => self.store.liked.get(self.favorites_cursor).cloned(),
-            ViewMode::History => self.store.history.get(self.history_cursor).map(|h| h.track.clone()),
-            ViewMode::PlaylistDetail => self
-                .selected_playlist_idx
-                .and_then(|i| self.store.playlists.get(i))
-                .and_then(|p| p.tracks.get(self.playlist_detail_cursor).cloned()),
-            ViewMode::UserProfile => self
-                .current_user_profile
-                .as_ref()
-                .and_then(|p| p.tracks.get(self.user_profile_cursor).cloned()),
-            _ => None,
+        let active = self.get_active_list_tracks();
+        let cursor = match self.view_mode {
+            ViewMode::Search => self.search_cursor,
+            ViewMode::Queue => self.queue_cursor,
+            ViewMode::Favorites => self.favorites_cursor,
+            ViewMode::History => self.history_cursor,
+            ViewMode::PlaylistDetail => self.playlist_detail_cursor,
+            ViewMode::UserProfile => self.user_profile_cursor,
+            _ => 0,
+        };
+        let from_view = if !active.is_empty() && cursor < active.len() {
+            Some(active[cursor].clone())
+        } else {
+            None
         };
         from_view.or_else(|| self.current_track().cloned())
     }

@@ -462,9 +462,7 @@ impl DataStore {
 
     pub fn save(&self) {
         #[cfg(test)]
-        {
-            return;
-        }
+        {}
         #[cfg(not(test))]
         {
             let path = Self::config_path();
